@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Traflux
 
-## Getting Started
+**Control the flow.** A cinematic, clear-night traffic sandbox built with Next.js, TypeScript, and Canvas 2D. This first milestone contains one four-way intersection with two straight-through lanes per approach.
 
-First, run the development server:
+## Run
 
-```bash
+```sh
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. No credentials, external services, or environment variables are needed. Geist fonts are bundled locally under the SIL Open Font License in `app/fonts/OFL.txt`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Controls
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Set North/South and East/West green durations independently, from 6 to 45 seconds. Changes affect the current cycle immediately; reducing the active green below its elapsed time initiates amber on the next simulation step.
+- Adjust demand from 0.3× to 2.5×. Each lane has deterministic, staggered arrivals; full approaches defer spawns until safe space exists.
+- Pause/resume and choose 1×, 2×, or 4× simulation speed.
+- Reset restores the same initial traffic and zeroes metrics while retaining signal settings, demand, playback speed, and pause state.
 
-## Learn More
+Try 45 seconds North/South and 6 seconds East/West at 1.5× demand, then reverse the timings to see queues shift between approaches.
 
-To learn more about Next.js, take a look at the following resources:
+## Architecture
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `lib/simulation/types.ts`: vehicles, lanes, signal phases, settings, metrics, and environment modifiers.
+- `lib/simulation/engine.ts`: DOM-independent seeded traffic engine. Fixed 1/60-second steps, acceleration/braking, leader following, safe spawn spacing, red-light stops, amber commitment, and all-red clearance. Orthogonal traffic cannot receive green until committed vehicles clear the intersection.
+- `lib/rendering/city.ts`: procedural top-down city, cached static backdrop and vehicle sprites, interpolated movement, head/brake lights, signals, and subtle particles.
+- `components/traflux/use-simulation.ts`: bounded animation loop, resize handling, pause/speed/reset, and throttled UI snapshots. Hidden tabs do not accumulate catch-up time. Reduced-motion preferences disable atmospheric particles and UI transitions; traffic remains visible and can be paused.
+- `components/traflux/`: presentation and accessible native controls, separate from the engine.
+- `app/`: server page/layout, local fonts, branding, and responsive styles.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The renderer caps pixel density at 2. The engine stays outside React state, with HUD updates about eight times per second. The engine's `WeatherModifiers` already affect speed, braking distance, following space/capacity, and demand; only neutral clear-night values are exposed in this milestone.
 
-## Deploy on Vercel
+## Metrics
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- **Active vehicles:** cars currently in the modeled road area, including approaches beyond the camera edges.
+- **Average wait:** mean accumulated stopped time (below 2 world units/second, before the stop line), including completed crossings and current approaching vehicles. Completed vehicles contribute once.
+- **Current queue:** approaching cars below that stopped-speed threshold, broken down by axis.
+- **Vehicles passed:** vehicles that have cleared the intersection. Throughput is the trailing 60-second crossing count, normalized per minute during the first minute.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Verify
+
+```sh
+npm run typecheck
+npm run lint
+npm run test:simulation
+npm run build
+```
+
+The dependency-free simulation test harness uses the existing TypeScript compiler to load the engine. It checks deterministic replay, all signal phases, following gaps, red-light stops, crossing collisions, live timing/demand changes, weather-modifier changes, reset, and contrasting congestion scenarios. Rush-hour tests exercise over 100 active vehicles.
+
+If a restricted environment prevents Turbopack's CSS workers from opening their local IPC port, `npm run build -- --webpack` uses Next.js's supported alternative bundler.
+
+No turning, pedestrians, full weather mechanics, accounts, persistence, or external services are included in this milestone.
