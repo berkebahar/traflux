@@ -1,51 +1,63 @@
 import { createEnvironment, stepEnvironment } from "./environment";
-import { VEHICLE_CLASSES, DEFAULT_SETTINGS as VEHICLE_DEFAULT_SETTINGS, makeVehicle } from "./vehicles";
+import { getChallenge } from "./challenges";
+import { emitEvent } from "./events";
+import {
+  activeBlockPosition,
+  clearIncidentEarly,
+  demandMultiplierForDirection,
+  dispatchEmergency,
+  triggerIncident,
+  updateEmergencyResponses,
+  updateIncidents,
+} from "./incidents";
+import { CLEAR_POSITION, LANES, STOP_POSITION, WORLD_EDGE, vehiclePoint } from "./lanes";
+import { scoreChallenge } from "./scoring";
+import { DEFAULT_SETTINGS as VEHICLE_DEFAULT_SETTINGS, VEHICLE_CLASSES, makeVehicle } from "./vehicles";
 import type {
   Axis,
-  Lane,
+  Direction,
+  EmergencyType,
+  ImplementedIncidentKind,
   Metrics,
   SignalColor,
   SignalPhase,
   SimulationSettings,
   SimulationSnapshot,
   SimulationState,
+  TimeOfDay,
   Vehicle,
+  WeatherMode,
 } from "./types";
 
+export { LANES, STOP_POSITION, CLEAR_POSITION, WORLD_EDGE, vehiclePoint };
+
 export const FIXED_STEP = 1 / 60;
-export const WORLD_EDGE = 660;
-export const STOP_POSITION = -124;
-export const CLEAR_POSITION = 96;
 export const DEFAULT_SETTINGS: SimulationSettings = VEHICLE_DEFAULT_SETTINGS;
-
-export const LANES: Lane[] = [
-  { id: 0, origin: "north", axis: "ns", offset: 20, angle: Math.PI / 2 },
-  { id: 1, origin: "north", axis: "ns", offset: 48, angle: Math.PI / 2 },
-  { id: 2, origin: "south", axis: "ns", offset: 20, angle: -Math.PI / 2 },
-  { id: 3, origin: "south", axis: "ns", offset: 48, angle: -Math.PI / 2 },
-  { id: 4, origin: "east", axis: "ew", offset: 20, angle: Math.PI },
-  { id: 5, origin: "east", axis: "ew", offset: 48, angle: Math.PI },
-  { id: 6, origin: "west", axis: "ew", offset: 20, angle: 0 },
-  { id: 7, origin: "west", axis: "ew", offset: 48, angle: 0 },
-];
-
 const PHASES: SignalPhase[] = ["ns-green", "ns-amber", "ns-clear", "ew-green", "ew-amber", "ew-clear"];
 
-function cloneSettings(settings: SimulationSettings): SimulationSettings {
+function mergeSettings(settings: Partial<SimulationSettings> = {}): SimulationSettings {
   return {
+    ...DEFAULT_SETTINGS,
     ...settings,
-    directionalDemand: { ...settings.directionalDemand },
-    vehicleMix: { ...settings.vehicleMix },
+    directionalDemand: {
+      ...DEFAULT_SETTINGS.directionalDemand,
+      ...(settings.directionalDemand ?? {}),
+    },
+    vehicleMix: {
+      ...DEFAULT_SETTINGS.vehicleMix,
+      ...(settings.vehicleMix ?? {}),
+    },
   };
 }
 
-export function createSimulation(settings: SimulationSettings = DEFAULT_SETTINGS): SimulationState {
+export function createSimulation(settings: Partial<SimulationSettings> = {}): SimulationState {
+  const merged = mergeSettings(settings);
   const state: SimulationState = {
     time: 0,
     mode: "sandbox",
     vehicles: [],
     lights: { phase: "ns-green", elapsed: 0, priorityAxis: null },
-    settings: cloneSettings(settings),
+    settings: merged,
     environment: createEnvironment("clear", "night"),
     spawnTimers: LANES.map((lane) => 0.3 + lane.id * 0.29),
     nextId: 1,
@@ -68,7 +80,7 @@ export function createSimulation(settings: SimulationSettings = DEFAULT_SETTINGS
     nextEventId: 1,
     nextIncidentId: 1,
     nextResponseId: 1,
-    nextRandomIncidentAt: 45,
+    nextRandomIncidentAt: 48,
     priority: null,
     challenge: null,
   };
@@ -90,10 +102,38 @@ export function createSimulation(settings: SimulationSettings = DEFAULT_SETTINGS
   return state;
 }
 
+export function createChallengeSimulation(challengeId: string): SimulationState {
+  const challenge = getChallenge(challengeId);
+  const state = createSimulation(challenge.settings);
+  state.mode = "challenge";
+  state.environment = createEnvironment(challenge.weather, challenge.timeOfDay);
+  state.challenge = {
+    id: challenge.id,
+    status: "running",
+    budget: challenge.budget,
+    initialBudget: challenge.budget,
+    firedEvents: [],
+    result: null,
+  };
+  state.events = [];
+  emitEvent(state, {
+    kind: "challenge",
+    title: challenge.title,
+    detail: `${challenge.timestamp} · Simulation started`,
+  });
+  return state;
+}
+
 export function signalFor(state: SimulationState, axis: Axis): SignalColor {
   if (state.lights.phase === `${axis}-green`) return "green";
   if (state.lights.phase === `${axis}-amber`) return "amber";
   return "red";
+}
+
+function requestedPriorityAxis(state: SimulationState): Axis | null {
+  if (state.priority && state.time < state.priority.until) return state.priority.axis;
+  const response = state.responses.find((item) => item.status === "approaching");
+  return response ? LANES[response.laneId].axis : null;
 }
 
 export function phaseDuration(state: SimulationState): number {
@@ -104,12 +144,34 @@ export function phaseDuration(state: SimulationState): number {
 
 function updateSignals(state: SimulationState, dt: number) {
   state.lights.elapsed += dt;
+  const priorityAxis = requestedPriorityAxis(state);
+  state.lights.priorityAxis = priorityAxis;
+
+  if (priorityAxis) {
+    const activeAxis = state.lights.phase.startsWith("ns") ? "ns" : "ew";
+    if (
+      state.lights.phase.endsWith("green") &&
+      activeAxis !== priorityAxis &&
+      state.lights.elapsed >= 3
+    ) {
+      state.lights.phase = `${activeAxis}-amber` as SignalPhase;
+      state.lights.elapsed = 0;
+      return;
+    }
+  }
+
   if (state.lights.elapsed < phaseDuration(state)) return;
 
   if (
     state.lights.phase.endsWith("clear") &&
     state.vehicles.some((vehicle) => vehicle.committed && vehicle.position < CLEAR_POSITION)
   ) return;
+
+  if (state.lights.phase.endsWith("clear") && priorityAxis) {
+    state.lights.phase = `${priorityAxis}-green` as SignalPhase;
+    state.lights.elapsed = 0;
+    return;
+  }
 
   const oldPhase = state.lights.phase;
   state.lights.phase = PHASES[(PHASES.indexOf(oldPhase) + 1) % PHASES.length];
@@ -127,20 +189,66 @@ function updateSignals(state: SimulationState, dt: number) {
   }
 }
 
-function activeLaneBlock(state: SimulationState, laneId: number): number | null {
-  let nearest: number | null = null;
-  for (const incident of state.incidents) {
-    if (incident.status !== "active" || incident.laneId !== laneId) continue;
-    if (nearest === null || incident.position < nearest) nearest = incident.position;
+function isVehicleHeldByIncident(state: SimulationState, vehicle: Vehicle) {
+  return vehicle.incidentId !== null && state.incidents.some(
+    (incident) => incident.id === vehicle.incidentId && incident.status === "active",
+  );
+}
+
+function updateChallenge(state: SimulationState) {
+  if (!state.challenge || state.challenge.status !== "running") return;
+  const challenge = getChallenge(state.challenge.id);
+
+  challenge.events.forEach((event, index) => {
+    if (state.challenge!.firedEvents.includes(index) || state.time < event.at) return;
+    state.challenge!.firedEvents.push(index);
+    const incident = triggerIncident(
+      state,
+      event.kind,
+      event.direction,
+      event.duration,
+      event.multiplier ?? 1.6,
+    );
+    if (event.response) dispatchEmergency(state, event.response, incident.id, event.direction);
+  });
+
+  if (state.time >= challenge.duration) {
+    state.challenge.status = "finished";
+    state.challenge.result = scoreChallenge(
+      challenge,
+      getMetrics(state),
+      state.challenge.budget,
+      state.challenge.initialBudget,
+    );
+    emitEvent(state, {
+      kind: "challenge",
+      title: state.challenge.result.success ? "OBJECTIVE COMPLETE" : "RUN COMPLETE",
+      detail: `Traflux score ${state.challenge.result.score.overall}`,
+    });
   }
-  return nearest;
+}
+
+function maybeTriggerRandomIncident(state: SimulationState) {
+  if (!state.settings.randomIncidents || state.mode !== "sandbox" || state.time < state.nextRandomIncidentAt) return;
+  const kinds: ImplementedIncidentKind[] = ["breakdown", "surge", "collision"];
+  const directions: Direction[] = ["north", "south", "east", "west"];
+  const kind = kinds[state.incidentSeed % kinds.length];
+  const direction = directions[(state.incidentSeed >>> 3) % directions.length];
+  const incident = triggerIncident(state, kind, direction);
+  if (kind === "collision") dispatchEmergency(state, "ambulance", incident.id, direction);
+  state.incidentSeed = (Math.imul(1664525, state.incidentSeed) + 1013904223) >>> 0;
+  state.nextRandomIncidentAt = state.time + 55 + (state.incidentSeed % 45);
 }
 
 /** Mutates only the supplied state. Call with FIXED_STEP for reproducible runs. */
 export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP): void {
   state.time += dt;
   stepEnvironment(state.environment, dt);
+  updateIncidents(state, dt);
+  updateEmergencyResponses(state);
   updateSignals(state, dt);
+  maybeTriggerRandomIncident(state);
+  updateChallenge(state);
 
   for (const lane of LANES) {
     const cars = state.vehicles
@@ -148,10 +256,19 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
       .sort((a, b) => b.position - a.position);
 
     let leader: Vehicle | undefined;
-    const laneBlock = activeLaneBlock(state, lane.id);
+    const laneBlock = activeBlockPosition(state, lane.id);
 
     for (const car of cars) {
       const config = VEHICLE_CLASSES[car.type];
+      car.previousPosition = car.position;
+
+      if (isVehicleHeldByIncident(state, car)) {
+        car.speed = 0;
+        car.braking = true;
+        leader = car;
+        continue;
+      }
+
       const speedLimit = config.maxSpeed * state.environment.modifiers.speed;
       const deceleration = config.deceleration / state.environment.modifiers.brakingDistance;
       const acceleration = config.acceleration;
@@ -160,13 +277,15 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
         state.environment.modifiers.followingDistance /
         Math.max(0.45, state.environment.modifiers.roadCapacity);
 
-      car.previousPosition = car.position;
       let limit = Infinity;
       let targetSpeed = speedLimit;
 
       if (leader) {
         const leaderConfig = VEHICLE_CLASSES[leader.type];
-        const sharedGap = Math.max(desiredGap, leaderConfig.followingGap * state.environment.modifiers.followingDistance);
+        const sharedGap = Math.max(
+          desiredGap,
+          leaderConfig.followingGap * state.environment.modifiers.followingDistance,
+        );
         limit = leader.position - (leader.length + car.length) / 2 - sharedGap;
         const distance = Math.max(0, limit - car.position);
         targetSpeed = Math.min(
@@ -202,10 +321,7 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
         ),
       );
 
-      const nextPosition = Math.max(
-        car.position,
-        Math.min(limit, car.position + car.speed * dt),
-      );
+      const nextPosition = Math.max(car.position, Math.min(limit, car.position + car.speed * dt));
       car.speed = Math.max(0, (nextPosition - car.position) / dt);
       car.position = nextPosition;
       car.braking = car.speed < oldSpeed - 0.1 || car.speed < 2;
@@ -229,13 +345,13 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
       leader = car;
     }
 
-    const directionalDemand = state.settings.directionalDemand[lane.origin];
     const timeDemand = state.settings.demandMode === "auto" ? state.environment.automaticDemand : 1;
     const effectiveDemand =
       state.settings.demand *
-      directionalDemand *
+      state.settings.directionalDemand[lane.origin] *
       timeDemand *
-      state.environment.modifiers.demand;
+      state.environment.modifiers.demand *
+      demandMultiplierForDirection(state, lane.origin);
 
     state.spawnTimers[lane.id] -= dt * Math.max(0.05, effectiveDemand);
 
@@ -256,10 +372,65 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
   state.vehicles = state.vehicles.filter((vehicle) => vehicle.position < WORLD_EDGE);
   state.recentPasses = state.recentPasses.filter((time) => time > state.time - 60);
 
-  const queue = state.vehicles.filter(
+  const currentQueue = state.vehicles.filter(
     (vehicle) => vehicle.speed < 2 && vehicle.position <= STOP_POSITION,
   ).length;
-  state.maxQueue = Math.max(state.maxQueue, queue);
+  state.maxQueue = Math.max(state.maxQueue, currentQueue);
+
+  if (state.priority && state.time >= state.priority.until) state.priority = null;
+}
+
+export function setWeather(state: SimulationState, weather: WeatherMode) {
+  if (state.environment.weather === weather) return;
+  state.environment.weather = weather;
+  emitEvent(state, { kind: "environment", title: "WEATHER UPDATED", detail: weather.toUpperCase() });
+}
+
+export function setTimeOfDay(state: SimulationState, timeOfDay: TimeOfDay) {
+  if (state.environment.timeOfDay === timeOfDay) return;
+  state.environment.timeOfDay = timeOfDay;
+  emitEvent(state, { kind: "environment", title: "TIME UPDATED", detail: timeOfDay.toUpperCase() });
+}
+
+export function triggerSandboxIncident(
+  state: SimulationState,
+  kind: ImplementedIncidentKind,
+  direction?: Direction,
+) {
+  const incident = triggerIncident(state, kind, direction);
+  if (kind === "collision") dispatchEmergency(state, "ambulance", incident.id, direction);
+  return incident;
+}
+
+export function triggerEmergency(
+  state: SimulationState,
+  type: EmergencyType = "ambulance",
+  origin?: Direction,
+) {
+  return dispatchEmergency(state, type, null, origin);
+}
+
+export function applyGreenPriority(state: SimulationState, axis: Axis) {
+  const cost = state.mode === "challenge" ? 2000 : 0;
+  if (state.challenge && state.challenge.budget < cost) return false;
+  if (state.challenge) state.challenge.budget -= cost;
+  state.priority = { axis, until: state.time + 14 };
+  state.lights.priorityAxis = axis;
+  emitEvent(state, {
+    kind: "intervention",
+    title: "GREEN PRIORITY",
+    detail: `${axis === "ns" ? "North / South" : "East / West"} priority · 14s${cost ? ` · $${cost.toLocaleString()}` : ""}`,
+  });
+  return true;
+}
+
+export function accelerateIncidentClearance(state: SimulationState, incidentId: number) {
+  const cost = state.mode === "challenge" ? 8000 : 0;
+  if (state.challenge && state.challenge.budget < cost) return false;
+  const changed = clearIncidentEarly(state, incidentId, 20);
+  if (!changed) return false;
+  if (state.challenge) state.challenge.budget -= cost;
+  return true;
 }
 
 export function getMetrics(state: SimulationState): Metrics {
@@ -347,12 +518,5 @@ export function getSnapshot(state: SimulationState): SimulationSnapshot {
             : null,
         }
       : null,
-  };
-}
-
-export function vehiclePoint(lane: Lane, position: number): { x: number; y: number } {
-  return {
-    x: Math.cos(lane.angle) * position - Math.sin(lane.angle) * lane.offset,
-    y: Math.sin(lane.angle) * position + Math.cos(lane.angle) * lane.offset,
   };
 }
