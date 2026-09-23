@@ -146,7 +146,6 @@ export function Traflux() {
         changeVehicleMix={changeVehicleMix}
         setDemandMode={setDemandMode}
         setRandomIncidents={setRandomIncidents}
-        setCongestionOverlay={setCongestionOverlay}
         triggerEvent={triggerEvent}
         dispatch={dispatch}
         requestPriority={requestPriority}
