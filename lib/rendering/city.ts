@@ -3,6 +3,11 @@ import type { SimulationState, VehicleType } from "../simulation/types";
 
 type Context = CanvasRenderingContext2D;
 const TAU = Math.PI * 2;
+const WORLD_SIZE = 4000;
+const WORLD_HALF = WORLD_SIZE / 2;
+const CAMERA_LIMIT = 1450;
+const MIN_ZOOM = .52;
+const MAX_ZOOM = 1.75;
 
 function rect(ctx: Context, x: number, y: number, w: number, h: number, color: string, radius = 0) {
   ctx.fillStyle = color;
@@ -82,8 +87,80 @@ function arrow(ctx: Context, x: number, y: number) {
   line(ctx, x, y - 10, x + 5, y - 4, "#b9c2b244", 2);
 }
 
+
+function drawOuterCity(ctx: Context) {
+  const roads = [-1500, -900, 900, 1500];
+
+  for (const road of roads) {
+    rect(ctx, road - 48, -WORLD_HALF, 96, WORLD_SIZE, "#252d2f");
+    rect(ctx, -WORLD_HALF, road - 48, WORLD_SIZE, 96, "#252d2f");
+
+    ctx.setLineDash([16, 25]);
+    line(ctx, road, -WORLD_HALF, road, WORLD_HALF, "#c7cfbf2a", 1);
+    line(ctx, -WORLD_HALF, road, WORLD_HALF, road, "#c7cfbf2a", 1);
+    ctx.setLineDash([]);
+
+    line(ctx, road - 43, -WORLD_HALF, road - 43, WORLD_HALF, "#aab5aa20", 1);
+    line(ctx, road + 43, -WORLD_HALF, road + 43, WORLD_HALF, "#aab5aa20", 1);
+    line(ctx, -WORLD_HALF, road - 43, WORLD_HALF, road - 43, "#aab5aa20", 1);
+    line(ctx, -WORLD_HALF, road + 43, WORLD_HALF, road + 43, "#aab5aa20", 1);
+  }
+
+  const centers = [-1770, -1200, -600, 600, 1200, 1770];
+  let seed = 0;
+
+  for (const x of centers) {
+    for (const y of centers) {
+      seed++;
+      if (Math.abs(x) < 780 && Math.abs(y) < 780) continue;
+
+      const blockW = 430 + (seed % 3) * 26;
+      const blockH = 410 + (seed % 4) * 22;
+      rect(ctx, x - blockW / 2, y - blockH / 2, blockW, blockH, "#172220", 13);
+      rect(ctx, x - blockW / 2 + 12, y - blockH / 2 + 12, blockW - 24, blockH - 24, "#202a29", 9);
+
+      const warm = seed % 2 === 0;
+      const bw1 = 150 + (seed % 5) * 14;
+      const bh1 = 105 + (seed % 4) * 15;
+      building(ctx, x - blockW / 2 + 34, y - blockH / 2 + 36, bw1, bh1, warm);
+
+      const bw2 = 120 + ((seed + 2) % 5) * 13;
+      const bh2 = 95 + ((seed + 1) % 4) * 14;
+      building(ctx, x + blockW / 2 - bw2 - 36, y + blockH / 2 - bh2 - 38, bw2, bh2, !warm);
+
+      if (seed % 3 === 0) {
+        rect(ctx, x - 68, y - 55, 136, 110, "#1b2924", 8);
+        for (let i = 0; i < 6; i++) tree(ctx, x - 48 + (i % 3) * 48, y - 28 + Math.floor(i / 3) * 58, 12 + (i % 2) * 3, seed + i);
+      } else {
+        for (let i = 0; i < 4; i++) {
+          const tx = x - blockW / 2 + 30 + ((i * 79 + seed * 17) % Math.max(60, blockW - 70));
+          const ty = y + blockH / 2 - 25 - (i % 2) * 18;
+          tree(ctx, tx, ty, 10 + (seed + i) % 4, seed + i);
+        }
+      }
+
+      for (let i = 0; i < 5; i++) {
+        const px = x - blockW / 2 + 35 + i * 34;
+        const py = y + blockH / 2 - 17;
+        rect(ctx, px, py, 18, 7, ["#46565a", "#6d746a", "#8a7965"][i % 3], 2);
+      }
+    }
+  }
+
+  ctx.save();
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#9eafa044";
+  ctx.fillText("RIVER WARD", -1200, -1825);
+  ctx.fillText("NORTH MARKET", 1180, -1825);
+  ctx.fillText("WEST INDUSTRIAL", -1710, 1260);
+  ctx.fillText("EAST DISTRICT", 1710, 1260);
+  ctx.restore();
+}
+
 function drawCity(ctx: Context) {
-  rect(ctx, -1800, -1800, 3600, 3600, "#101a1b");
+  rect(ctx, -WORLD_HALF, -WORLD_HALF, WORLD_SIZE, WORLD_SIZE, "#101a1b");
+  drawOuterCity(ctx);
   // Sidewalks wrap the four city blocks.
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
     ctx.save(); ctx.scale(sx, sy);
@@ -261,20 +338,25 @@ function vehicleSprite(type: VehicleType, color: string, braking: boolean): HTML
   return canvas;
 }
 
-function drawCongestionIndicators(ctx: Context, state: SimulationState) {
+function drawQueueEdges(ctx: Context, state: SimulationState) {
   if (!state.settings.showCongestion) return;
+
   for (const lane of LANES) {
-    const queued = state.vehicles.filter((vehicle) => vehicle.laneId === lane.id && vehicle.speed < 2 && vehicle.position < -100).length;
+    const queued = state.vehicles.filter(
+      (vehicle) => vehicle.laneId === lane.id && vehicle.speed < 2 && vehicle.position < -100,
+    ).length;
     if (!queued) continue;
-    const point = vehiclePoint(lane, -145);
-    const strength = Math.min(1, queued / 8);
-    const color = strength > .65 ? "#e06f5b" : strength > .3 ? "#d4b36a" : "#a9d494";
-    glow(ctx, point.x, point.y, 18 + queued * 1.4, color + "20");
-    ctx.strokeStyle = color + "80";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 7 + queued * .35, 0, TAU);
-    ctx.stroke();
+
+    const point = vehiclePoint(lane, -158);
+    const length = 12 + Math.min(queued, 12) * 2.4;
+    const alpha = .2 + Math.min(queued / 12, 1) * .28;
+
+    ctx.save();
+    ctx.translate(point.x, point.y);
+    ctx.rotate(lane.angle);
+    ctx.fillStyle = `rgba(218,174,103,${alpha})`;
+    ctx.fillRect(-length / 2, lane.offset > 30 ? 12 : -15, length, 2);
+    ctx.restore();
   }
 }
 
@@ -299,17 +381,25 @@ function drawWorldEnvironment(ctx: Context, state: SimulationState, reducedMotio
     ctx.globalAlpha = 1;
   }
 
-  drawCongestionIndicators(ctx, state);
+  drawQueueEdges(ctx, state);
 
   for (const incident of state.incidents) {
     if (incident.status !== "active" || incident.laneId === null) continue;
     const point = vehiclePoint(LANES[incident.laneId], incident.position);
-    const pulse = reducedMotion ? 1 : .75 + Math.sin(state.time * 4) * .2;
+    const pulse = reducedMotion ? 1 : .72 + Math.sin(state.time * 4) * .18;
+    const size = 19 + pulse * 3;
+    const corner = 7;
     ctx.strokeStyle = incident.kind === "collision" ? `rgba(235,132,104,${pulse})` : `rgba(224,188,105,${pulse})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 19 + pulse * 4, 0, TAU);
-    ctx.stroke();
+    ctx.lineWidth = 1.4;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+      const x = point.x + sx * size;
+      const y = point.y + sy * size;
+      ctx.beginPath();
+      ctx.moveTo(x, y + sy * -corner);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x + sx * -corner, y);
+      ctx.stroke();
+    }
   }
 }
 
@@ -374,47 +464,97 @@ function drawScreenWeather(ctx: Context, state: SimulationState, width: number, 
   ctx.restore();
 }
 
-/** Static city and vehicle sprites are rasterized once, keeping each frame inexpensive. */
+/** A cached large world plus a lightweight pan/zoom camera keeps navigation smooth. */
 export class CityRenderer {
   private context: Context;
-  private backdrop = document.createElement("canvas");
+  private worldBackdrop = document.createElement("canvas");
   private sprites = new Map<string, HTMLCanvasElement>();
   private width = 0;
   private height = 0;
-  private scale = 1;
+  private baseScale = 1;
   private centerX = 0;
   private centerY = 0;
   private dpr = 1;
+  private camera = { x: 0, y: 0, zoom: 1 };
 
   constructor(private canvas: HTMLCanvasElement) {
     this.context = canvas.getContext("2d", { alpha: false })!;
+    this.buildWorld();
+  }
+
+  private buildWorld() {
+    this.worldBackdrop.width = WORLD_SIZE;
+    this.worldBackdrop.height = WORLD_SIZE;
+    const ctx = this.worldBackdrop.getContext("2d")!;
+    ctx.save();
+    ctx.translate(WORLD_HALF, WORLD_HALF);
+    drawCity(ctx);
+    ctx.restore();
   }
 
   resize(width: number, height: number) {
-    this.width = width; this.height = height;
+    this.width = width;
+    this.height = height;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = this.backdrop.width = Math.round(width * this.dpr);
-    this.canvas.height = this.backdrop.height = Math.round(height * this.dpr);
+    this.canvas.width = Math.round(width * this.dpr);
+    this.canvas.height = Math.round(height * this.dpr);
+
     const reserve = width > 900 ? 290 : 0;
-    this.scale = Math.max(Math.min((width - reserve) / 980, height / 810), (width - reserve) / 1240, height / 1240);
+    this.baseScale = Math.max(
+      Math.min((width - reserve) / 980, height / 810),
+      (width - reserve) / 1240,
+      height / 1240,
+    );
     this.centerX = (width - reserve) / 2;
-    this.centerY = height * 0.51;
-    const ctx = this.backdrop.getContext("2d")!;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = "#111a1b"; ctx.fillRect(0, 0, width, height);
-    ctx.translate(this.centerX, this.centerY); ctx.scale(this.scale, this.scale);
-    drawCity(ctx);
+    this.centerY = height * .51;
+  }
+
+  panByScreen(dx: number, dy: number) {
+    const scale = this.baseScale * this.camera.zoom;
+    if (!scale) return;
+    this.camera.x = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, this.camera.x - dx / scale));
+    this.camera.y = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, this.camera.y - dy / scale));
+  }
+
+  zoomAt(screenX: number, screenY: number, factor: number) {
+    const previousZoom = this.camera.zoom;
+    const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, previousZoom * factor));
+    if (Math.abs(nextZoom - previousZoom) < .0001) return;
+
+    const previousScale = this.baseScale * previousZoom;
+    const nextScale = this.baseScale * nextZoom;
+    const worldX = this.camera.x + (screenX - this.centerX) / previousScale;
+    const worldY = this.camera.y + (screenY - this.centerY) / previousScale;
+
+    this.camera.zoom = nextZoom;
+    this.camera.x = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, worldX - (screenX - this.centerX) / nextScale));
+    this.camera.y = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, worldY - (screenY - this.centerY) / nextScale));
+  }
+
+  resetCamera() {
+    this.camera = { x: 0, y: 0, zoom: 1 };
   }
 
   render(state: SimulationState, interpolation: number, reducedMotion: boolean) {
     const ctx = this.context;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.backdrop, 0, 0);
+    const worldScale = this.baseScale * this.camera.zoom;
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.fillStyle = "#10191b";
+    ctx.fillRect(0, 0, this.width, this.height);
+
     ctx.save();
     ctx.translate(this.centerX, this.centerY);
-    ctx.scale(this.scale, this.scale);
+    ctx.scale(worldScale, worldScale);
+    ctx.translate(-this.camera.x, -this.camera.y);
+
+    ctx.drawImage(
+      this.worldBackdrop,
+      -WORLD_HALF,
+      -WORLD_HALF,
+      WORLD_SIZE,
+      WORLD_SIZE,
+    );
 
     drawWorldEnvironment(ctx, state, reducedMotion);
 
@@ -485,6 +625,7 @@ export class CityRenderer {
       line(ctx, 76, 119, 50, 119, "#0e1718", 3);
       rect(ctx, 63, 111, 10, 26, "#080e10", 3);
       const colors = { red: "#ff6553", amber: "#ffc568", green: "#a6e6b4" };
+
       for (const [i, color] of (["red", "amber", "green"] as const).entries()) {
         const y = 116 + i * 8;
         if (active === color) glow(ctx, 68, y, 22, colors[color] + "48");
@@ -493,19 +634,17 @@ export class CityRenderer {
         ctx.fillStyle = active === color ? colors[color] : "#24302b";
         ctx.fill();
       }
-      if (state.lights.priorityAxis === axis) {
-        glow(ctx, 47, 113, 58, "#c9eda825");
-      } else {
-        glow(ctx, 47, 113, 46, colors[active] + "0e");
-      }
+
+      if (state.lights.priorityAxis === axis) glow(ctx, 47, 113, 58, "#c9eda825");
+      else glow(ctx, 47, 113, 46, colors[active] + "0e");
       ctx.restore();
     }
 
     if (!reducedMotion && state.environment.visuals.rain < .15 && state.environment.visuals.snow < .15) {
-      for (let i = 0; i < 28; i++) {
-        const x = ((i * 137 + state.time * (1 + i % 3)) % 1200) - 600;
-        const y = ((i * 233 + state.time * .8) % 1000) - 500;
-        ctx.fillStyle = `rgba(215,226,206,${.08 + Math.sin(state.time * .2 + i) * .035})`;
+      for (let i = 0; i < 38; i++) {
+        const x = ((i * 137 + state.time * (1 + i % 3)) % 3000) - 1500;
+        const y = ((i * 233 + state.time * .8) % 2600) - 1300;
+        ctx.fillStyle = `rgba(215,226,206,${.07 + Math.sin(state.time * .2 + i) * .03})`;
         ctx.beginPath();
         ctx.arc(x, y, .65 + (i % 3) * .2, 0, TAU);
         ctx.fill();
@@ -523,12 +662,11 @@ export class CityRenderer {
       this.height * .15,
       this.centerX,
       this.centerY,
-      Math.max(this.width, this.height) * .75,
+      Math.max(this.width, this.height) * .78,
     );
     vignette.addColorStop(0, "#070e1000");
-    vignette.addColorStop(1, "#070e10bc");
+    vignette.addColorStop(1, "#070e10b2");
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, this.width, this.height);
   }
-
 }
