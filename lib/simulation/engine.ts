@@ -189,9 +189,14 @@ function updateSignals(state: SimulationState, dt: number) {
   }
 }
 
-function isVehicleHeldByIncident(state: SimulationState, vehicle: Vehicle) {
-  return vehicle.incidentId !== null && state.incidents.some(
+function isVehicleHeld(state: SimulationState, vehicle: Vehicle) {
+  const incidentHeld = vehicle.incidentId !== null && state.incidents.some(
     (incident) => incident.id === vehicle.incidentId && incident.status === "active",
+  );
+  if (incidentHeld) return true;
+
+  return vehicle.responseId !== null && state.responses.some(
+    (response) => response.id === vehicle.responseId && response.status === "on-scene",
   );
 }
 
@@ -262,7 +267,7 @@ export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP):
       const config = VEHICLE_CLASSES[car.type];
       car.previousPosition = car.position;
 
-      if (isVehicleHeldByIncident(state, car)) {
+      if (isVehicleHeld(state, car)) {
         car.speed = 0;
         car.braking = true;
         leader = car;
