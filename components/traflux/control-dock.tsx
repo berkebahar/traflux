@@ -1,6 +1,6 @@
 "use client";
 
-import type { Axis, Direction, ImplementedIncidentKind, SimulationSettings, SimulationSnapshot, TimeOfDay, VehicleMix, WeatherMode } from "@/lib/simulation/types";
+import type { Axis, Direction, EmergencyType, ImplementedIncidentKind, SimulationSettings, SimulationSnapshot, TimeOfDay, VehicleMix, WeatherMode } from "@/lib/simulation/types";
 
 const WEATHER_OPTIONS: { value: WeatherMode; label: string }[] = [
   { value: "clear", label: "Clear" },
@@ -67,7 +67,7 @@ export function ControlDock({
   setRandomIncidents: (value: boolean) => void;
   setCongestionOverlay: (value: boolean) => void;
   triggerEvent: (kind: ImplementedIncidentKind, direction?: Direction) => void;
-  dispatch: () => void;
+  dispatch: (type?: EmergencyType) => void;
   requestPriority: (axis: Axis) => boolean;
   clearIncident: (incidentId: number) => boolean;
 }) {
@@ -119,7 +119,9 @@ export function ControlDock({
         <button onClick={() => triggerEvent("breakdown")}>Breakdown</button>
         <button onClick={() => triggerEvent("collision")}>Minor collision</button>
         <button onClick={() => triggerEvent("surge")}>Traffic surge</button>
-        <button onClick={() => dispatch()}>Ambulance</button>
+        <button onClick={() => dispatch("police")}>Police</button>
+        <button onClick={() => dispatch("ambulance")}>Ambulance</button>
+        <button onClick={() => dispatch("fire")}>Fire engine</button>
       </div>
     </div>}
 
