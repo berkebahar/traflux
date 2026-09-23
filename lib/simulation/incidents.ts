@@ -126,7 +126,10 @@ export function dispatchEmergency(
 ): EmergencyResponse {
   const incident = incidentId === null ? null : state.incidents.find((item) => item.id === incidentId) ?? null;
   const targetOrigin = origin ?? incident?.directions[0] ?? DIRECTIONS[state.nextResponseId % DIRECTIONS.length];
-  const lane = LANES.find((item) => item.origin === targetOrigin) ?? LANES[0];
+  const originLanes = LANES.filter((item) => item.origin === targetOrigin);
+  const lane = incident?.laneId !== null && incident?.laneId !== undefined
+    ? originLanes.find((item) => item.id !== incident.laneId) ?? originLanes[0] ?? LANES[0]
+    : originLanes[0] ?? LANES[0];
   const responseId = state.nextResponseId++;
   const targetPosition = incident?.position ?? 70;
   const vehicle = makeVehicle(state, lane.id, -WORLD_EDGE, type);
