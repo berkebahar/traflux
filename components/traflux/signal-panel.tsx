@@ -30,7 +30,7 @@ export function SignalPanel({ settings, snapshot, changeSetting }: { settings: S
       <Slider id="ns-green" label="North / South" value={settings.nsGreen} min={6} max={45} display={`${settings.nsGreen} s`} onChange={value => changeSetting("nsGreen", value)} />
       <Slider id="ew-green" label="East / West" value={settings.ewGreen} min={6} max={45} display={`${settings.ewGreen} s`} onChange={value => changeSetting("ewGreen", value)} />
     </div>
-    <div className="demand-controls"><Slider id="demand" label="Traffic demand" value={settings.demand} min={0.3} max={2.5} step={0.1} display={`${settings.demand.toFixed(1)}×`} onChange={value => changeSetting("demand", value)} /></div>
+    {!snapshot.challenge && <div className="demand-controls"><Slider id="demand" label="Traffic demand" value={settings.demand} min={0.3} max={2.5} step={0.1} display={`${settings.demand.toFixed(1)}×`} onChange={value => changeSetting("demand", value)} /></div>}
     <div className="panel-note"><Icon name="info" size={14} /><p>Every second changes the flow.<br />Adjust the balance. Watch the city respond.</p></div>
   </aside>;
 }
