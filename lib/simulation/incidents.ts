@@ -26,8 +26,8 @@ function chooseLane(state: SimulationState, direction?: Direction) {
 
 function chooseIncidentVehicle(state: SimulationState, laneId: number) {
   return state.vehicles
-    .filter((vehicle) => vehicle.laneId === laneId && vehicle.position > -230 && vehicle.position < 50 && vehicle.incidentId === null)
-    .sort((a, b) => Math.abs(a.position + 70) - Math.abs(b.position + 70))[0];
+    .filter((vehicle) => vehicle.laneId === laneId && vehicle.position > -280 && vehicle.position < -135 && vehicle.incidentId === null)
+    .sort((a, b) => Math.abs(a.position + 175) - Math.abs(b.position + 175))[0];
 }
 
 export function triggerIncident(
@@ -70,7 +70,7 @@ export function triggerIncident(
   const lane = chooseLane(state, direction);
   let primary = chooseIncidentVehicle(state, lane.id);
   if (!primary) {
-    primary = makeVehicle(state, lane.id, -85, kind === "breakdown" ? "van" : "sedan");
+    primary = makeVehicle(state, lane.id, -175, kind === "breakdown" ? "van" : "sedan");
     state.vehicles.push(primary);
   }
 
