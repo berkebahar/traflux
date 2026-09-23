@@ -49,7 +49,7 @@ export function ControlDock({
   changeVehicleMix,
   setDemandMode,
   setRandomIncidents,
-  setCongestionOverlay,
+  setCongestionOverlay: _setCongestionOverlay,
   triggerEvent,
   dispatch,
   requestPriority,
@@ -108,21 +108,24 @@ export function ControlDock({
         <MiniRange label="Heavy" value={settings.vehicleMix.heavy} min={0} max={50} step={1} onChange={(next) => changeVehicleMix("heavy", next)} />
         <MiniRange label="Motorcycle" value={settings.vehicleMix.motorcycle} min={0} max={40} step={1} onChange={(next) => changeVehicleMix("motorcycle", next)} />
         <MiniRange label="Emergency" value={settings.vehicleMix.emergency} min={0} max={12} step={1} onChange={(next) => changeVehicleMix("emergency", next)} />
-        <label className="dock-check"><input type="checkbox" checked={settings.randomIncidents} onChange={(event) => setRandomIncidents(event.target.checked)} /> Random incidents</label>
-        <label className="dock-check"><input type="checkbox" checked={settings.showCongestion} onChange={(event) => setCongestionOverlay(event.target.checked)} /> Congestion indicators</label>
+        <label className="dock-check"><input type="checkbox" checked={settings.randomIncidents} onChange={(event) => setRandomIncidents(event.target.checked)} /> Autonomous incidents</label>
       </details>
     </>}
 
     {!snapshot.challenge && <div className="dock-section events-section">
-      <div className="dock-heading"><span>EVENTS</span><small>MANUAL</small></div>
-      <div className="event-buttons">
-        <button onClick={() => triggerEvent("breakdown")}>Breakdown</button>
-        <button onClick={() => triggerEvent("collision")}>Minor collision</button>
-        <button onClick={() => triggerEvent("surge")}>Traffic surge</button>
-        <button onClick={() => dispatch("police")}>Police</button>
-        <button onClick={() => dispatch("ambulance")}>Ambulance</button>
-        <button onClick={() => dispatch("fire")}>Fire engine</button>
-      </div>
+      <div className="dock-heading"><span>INCIDENT SYSTEM</span><small>AUTONOMOUS</small></div>
+      <p className="dock-copy">Breakdowns, surges, and occasional collisions now arrive on their own while the sandbox runs.</p>
+      <details className="test-events">
+        <summary>TEST AN EVENT</summary>
+        <div className="event-buttons">
+          <button onClick={() => triggerEvent("breakdown")}>Breakdown</button>
+          <button onClick={() => triggerEvent("collision")}>Minor collision</button>
+          <button onClick={() => triggerEvent("surge")}>Traffic surge</button>
+          <button onClick={() => dispatch("police")}>Police</button>
+          <button onClick={() => dispatch("ambulance")}>Ambulance</button>
+          <button onClick={() => dispatch("fire")}>Fire engine</button>
+        </div>
+      </details>
     </div>}
 
     <div className="dock-section intervention-section">
