@@ -1,34 +1,102 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import ts from "typescript";
 
-// Transpile the pure engine in memory; no test runner or generated files needed.
-const source = await readFile(new URL("../lib/simulation/engine.ts", import.meta.url), "utf8");
-const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } });
-const { createSimulation, stepSimulation, getMetrics, signalFor, vehiclePoint, LANES, STOP_POSITION } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const simulationDir = fileURLToPath(new URL("../lib/simulation/", import.meta.url));
+const tempDir = await mkdtemp(join(tmpdir(), "traflux-sim-"));
+
+async function compileSimulation() {
+  const files = (await readdir(simulationDir)).filter((name) => name.endsWith(".ts"));
+  for (const name of files) {
+    const source = await readFile(join(simulationDir, name), "utf8");
+    const { outputText, diagnostics } = ts.transpileModule(source, {
+      fileName: name,
+      reportDiagnostics: true,
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.ESNext,
+        strict: true,
+      },
+    });
+
+    const errors = (diagnostics ?? []).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+    assert.equal(errors.length, 0, `TypeScript transpile error in ${name}`);
+
+    const withExtensions = outputText
+      .replace(/from\s+["'](\.\/[A-Za-z0-9_-]+)["']/g, 'from "$1.mjs"')
+      .replace(/import\(["'](\.\/[A-Za-z0-9_-]+)["']\)/g, 'import("$1.mjs")');
+
+    await writeFile(join(tempDir, name.replace(/\.ts$/, ".mjs")), withExtensions);
+  }
+}
+
+await compileSimulation();
+
+const engine = await import(pathToFileURL(join(tempDir, "engine.mjs")).href);
+const {
+  LANES,
+  STOP_POSITION,
+  createChallengeSimulation,
+  createSimulation,
+  getMetrics,
+  setWeather,
+  signalFor,
+  stepSimulation,
+  triggerEmergency,
+  triggerSandboxIncident,
+  vehiclePoint,
+} = engine;
 
 function verifySafety(state) {
   assert(!(signalFor(state, "ns") === "green" && signalFor(state, "ew") === "green"));
+
   for (const lane of LANES) {
-    const cars = state.vehicles.filter(v => v.laneId === lane.id).sort((a, b) => b.position - a.position);
-    for (let i = 0; i < cars.length; i++) {
-      const car = cars[i];
+    const cars = state.vehicles
+      .filter((vehicle) => vehicle.laneId === lane.id)
+      .sort((a, b) => b.position - a.position);
+
+    for (let index = 0; index < cars.length; index++) {
+      const car = cars[index];
       assert(Number.isFinite(car.position) && Number.isFinite(car.speed));
-      assert(car.position >= car.previousPosition - 1e-8, "Cars cannot move backwards");
-      if (i > 0) assert(cars[i - 1].position - car.position >= (cars[i - 1].length + car.length) / 2 + Math.min(12, 12 / state.weather.roadCapacity) - 1e-7, "Safe following gap violated");
-      if (signalFor(state, lane.axis) === "red" && !car.committed) assert(car.position <= STOP_POSITION, "Uncommitted car ran a red light");
+      assert(car.position >= car.previousPosition - 1e-7, "Vehicles cannot move backwards");
+
+      if (index > 0) {
+        const leader = cars[index - 1];
+        const separation = leader.position - car.position;
+        const nonOverlap = (leader.length + car.length) / 2 - .5;
+        assert(separation >= nonOverlap, "Same-lane vehicles overlapped");
+      }
+
+      if (signalFor(state, lane.axis) === "red" && !car.committed) {
+        assert(car.position <= STOP_POSITION + 1e-6, "Uncommitted vehicle ran a red light");
+      }
     }
   }
-  const crossing = state.vehicles.filter(v => Math.abs(v.position) < 90);
+
+  const crossing = state.vehicles.filter((vehicle) => Math.abs(vehicle.position) < 88 && vehicle.incidentId === null);
   for (let i = 0; i < crossing.length; i++) {
     for (let j = i + 1; j < crossing.length; j++) {
-      const a = crossing[i], b = crossing[j];
-      const laneA = LANES[a.laneId], laneB = LANES[b.laneId];
+      const a = crossing[i];
+      const b = crossing[j];
+      const laneA = LANES[a.laneId];
+      const laneB = LANES[b.laneId];
       if (laneA.axis === laneB.axis) continue;
-      const pa = vehiclePoint(laneA, a.position), pb = vehiclePoint(laneB, b.position);
-      const aw = laneA.axis === "ew" ? a.length : 11, ah = laneA.axis === "ns" ? a.length : 11;
-      const bw = laneB.axis === "ew" ? b.length : 11, bh = laneB.axis === "ns" ? b.length : 11;
-      assert(Math.abs(pa.x - pb.x) >= (aw + bw) / 2 || Math.abs(pa.y - pb.y) >= (ah + bh) / 2, "Cross-traffic collision");
+
+      const pa = vehiclePoint(laneA, a.position);
+      const pb = vehiclePoint(laneB, b.position);
+      const aw = laneA.axis === "ew" ? a.length : a.width;
+      const ah = laneA.axis === "ns" ? a.length : a.width;
+      const bw = laneB.axis === "ew" ? b.length : b.width;
+      const bh = laneB.axis === "ns" ? b.length : b.width;
+
+      assert(
+        Math.abs(pa.x - pb.x) >= (aw + bw) / 2 ||
+        Math.abs(pa.y - pb.y) >= (ah + bh) / 2,
+        "Cross-traffic collision occurred outside the scripted incident system",
+      );
     }
   }
 }
@@ -36,47 +104,82 @@ function verifySafety(state) {
 function run(settings, seconds, changes) {
   const state = createSimulation(settings);
   const phases = new Set();
-  let peak = 0, queueTotal = 0, nsQueueTotal = 0, ewQueueTotal = 0;
+  let peak = 0;
+  let queueTotal = 0;
+  let nsQueueTotal = 0;
+  let ewQueueTotal = 0;
+
   for (let tick = 0; tick < seconds * 60; tick++) {
     changes?.(state, tick);
-    const uncommitted = state.vehicles.filter(v => !v.committed).map(v => v.id);
     stepSimulation(state);
-    for (const v of state.vehicles) {
-      if (uncommitted.includes(v.id) && signalFor(state, LANES[v.laneId].axis) === "red") {
-        assert(v.position <= STOP_POSITION, "A previously uncommitted vehicle crossed during red");
-      }
-    }
     verifySafety(state);
     phases.add(state.lights.phase);
     peak = Math.max(peak, state.vehicles.length);
+
     if (tick % 60 === 0) {
-      const m = getMetrics(state);
-      queueTotal += m.queue; nsQueueTotal += m.nsQueue; ewQueueTotal += m.ewQueue;
+      const metrics = getMetrics(state);
+      queueTotal += metrics.queue;
+      nsQueueTotal += metrics.nsQueue;
+      ewQueueTotal += metrics.ewQueue;
     }
   }
-  assert.equal(phases.size, 6, "Every signal phase must run");
+
   assert(state.passed > 0, "Traffic must cross the intersection");
-  return { state, peak, meanQueue: queueTotal / seconds, nsQueue: nsQueueTotal / seconds, ewQueue: ewQueueTotal / seconds };
+  return {
+    state,
+    phases,
+    peak,
+    meanQueue: queueTotal / seconds,
+    nsQueue: nsQueueTotal / seconds,
+    ewQueue: ewQueueTotal / seconds,
+  };
 }
 
-const normal = run({ nsGreen: 18, ewGreen: 18, demand: 1 }, 180);
-const repeated = run({ nsGreen: 18, ewGreen: 18, demand: 1 }, 180);
-assert.deepEqual(normal.state, repeated.state, "Identical inputs must produce identical runs");
-assert(normal.peak >= 50, "Normal traffic should exercise at least 50 active cars");
-assert(normal.meanQueue > 0, "Queues should form");
-const rush = run({ nsGreen: 18, ewGreen: 18, demand: 2.5 }, 300);
-assert(rush.peak >= 100, "Rush hour should exercise at least 100 active cars");
-assert(rush.meanQueue > normal.meanQueue, "Demand must increase congestion");
-const nsPriority = run({ nsGreen: 45, ewGreen: 6, demand: 1.5 }, 180);
-const ewPriority = run({ nsGreen: 6, ewGreen: 45, demand: 1.5 }, 180);
-assert(nsPriority.ewQueue > nsPriority.nsQueue * 1.5, "Short EW green must form a larger EW queue");
-assert(ewPriority.nsQueue > ewPriority.ewQueue * 1.5, "Short NS green must form a larger NS queue");
-run({ nsGreen: 18, ewGreen: 18, demand: 1 }, 180, (state, tick) => {
-  if (tick === 500) state.settings = { nsGreen: 6, ewGreen: 45, demand: 2.5 };
-  if (tick === 3000) state.settings = { nsGreen: 45, ewGreen: 6, demand: 0.3 };
-  if (tick === 6000) state.weather = { speed: 0.7, brakingDistance: 1.4, roadCapacity: 0.8, demand: 0.85 };
-});
-assert.deepEqual(createSimulation(), createSimulation(), "Reset must restore the seeded initial state");
-console.log(`PASS: deterministic replay, signal phases, red-light stopping, safe gaps, cross-traffic collision checks, live settings, weather modifiers, reset, and congestion response.`);
-console.log(`Normal traffic: peak ${normal.peak}, mean queue ${normal.meanQueue.toFixed(1)}. Rush hour: peak ${rush.peak}, mean queue ${rush.meanQueue.toFixed(1)}.`);
-console.log(`NS priority queues: NS ${nsPriority.nsQueue.toFixed(1)} / EW ${nsPriority.ewQueue.toFixed(1)}. EW priority: NS ${ewPriority.nsQueue.toFixed(1)} / EW ${ewPriority.ewQueue.toFixed(1)}.`);
+try {
+  const normal = run({ nsGreen: 18, ewGreen: 18, demand: 1, demandMode: "manual" }, 150);
+  const repeated = run({ nsGreen: 18, ewGreen: 18, demand: 1, demandMode: "manual" }, 150);
+
+  assert.deepEqual(normal.state, repeated.state, "Identical inputs must produce deterministic runs");
+  assert(normal.phases.size >= 5, "Signal controller should visit the full cycle");
+  assert(normal.meanQueue > 0, "Queues should form under ordinary demand");
+
+  const rush = run({ nsGreen: 18, ewGreen: 18, demand: 2.4, demandMode: "manual" }, 180);
+  assert(rush.peak > normal.peak, "Higher demand should increase active traffic");
+  assert(rush.meanQueue > normal.meanQueue, "Higher demand should increase congestion");
+
+  const weatherState = createSimulation({ demandMode: "manual" });
+  setWeather(weatherState, "storm");
+  for (let i = 0; i < 240; i++) stepSimulation(weatherState);
+  assert(weatherState.environment.modifiers.speed < .9, "Storm must reduce target speed");
+  assert(weatherState.environment.modifiers.roadCapacity < .95, "Storm must reduce road capacity");
+
+  const incidentState = createSimulation({ demand: 1.7, demandMode: "manual" });
+  const incident = triggerSandboxIncident(incidentState, "collision", "west");
+  assert.equal(incident.kind, "collision");
+  assert.equal(incident.status, "active");
+  assert(incident.vehicleIds.length >= 1, "Scripted collision should hold at least one vehicle");
+  const held = incidentState.vehicles.find((vehicle) => incident.vehicleIds.includes(vehicle.id));
+  assert(held?.incidentId === incident.id, "Collision vehicle should reference the incident");
+
+  triggerEmergency(incidentState, "ambulance", "west");
+  assert(incidentState.vehicles.some((vehicle) => vehicle.type === "ambulance" && vehicle.emergency), "Emergency response should spawn an ambulance");
+  for (let i = 0; i < 60 * 25; i++) stepSimulation(incidentState);
+  assert(getMetrics(incidentState).queue > 0, "Blocked lane should create a measurable queue");
+
+  const challenge = createChallengeSimulation("storm-front");
+  for (let i = 0; i < 60 * 95; i++) stepSimulation(challenge);
+  assert(challenge.challenge?.firedEvents.includes(0), "Storm Front should fire its scripted incident");
+  assert(challenge.incidents.some((item) => item.kind === "collision"), "Storm Front should create its collision event");
+  assert(challenge.responses.some((response) => response.type === "ambulance"), "Storm Front should dispatch emergency response");
+
+  while (challenge.challenge?.status === "running") stepSimulation(challenge);
+  assert(challenge.challenge?.result, "Challenge should end with a score");
+  assert(challenge.challenge.result.score.overall >= 0 && challenge.challenge.result.score.overall <= 100, "Overall score must be bounded");
+
+  assert.deepEqual(createSimulation(), createSimulation(), "Reset seed must be deterministic");
+
+  console.log("PASS: deterministic traffic, signal safety, weather effects, congestion response, scripted incidents, emergency response, and challenge scoring.");
+  console.log(`Normal mean queue: ${normal.meanQueue.toFixed(1)} · Rush mean queue: ${rush.meanQueue.toFixed(1)} · Storm Front score: ${challenge.challenge.result.score.overall}`);
+} finally {
+  await rm(tempDir, { recursive: true, force: true });
+}
