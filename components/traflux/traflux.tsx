@@ -85,25 +85,6 @@ export function Traflux() {
         <div className="compass" aria-hidden="true"><span>N</span><svg viewBox="0 0 38 44" width="30" height="35"><path d="m19 4 10 31-10-6-10 6Z" fill="none" stroke="currentColor" strokeWidth="1" /><path d="M19 4v25L9 35Z" fill="currentColor" opacity=".45" /></svg></div>
         <div className="scene-caption"><span className="caption-line" /> ONE INTERSECTION. INFINITE RHYTHMS.</div>
 
-        <ControlDock
-          settings={sim.settings}
-          snapshot={sim.snapshot}
-          onShowChallenges={() => setChallengeBrowserOpen(true)}
-          onOpenSandbox={openSandbox}
-          changeWeather={sim.changeWeather}
-          changeTime={sim.changeTime}
-          changeDirectionalDemand={sim.changeDirectionalDemand}
-          changeVehicleMix={sim.changeVehicleMix}
-          setDemandMode={sim.setDemandMode}
-          setRandomIncidents={sim.setRandomIncidents}
-          setCongestionOverlay={sim.setCongestionOverlay}
-          triggerEvent={sim.triggerEvent}
-          dispatch={sim.dispatch}
-          requestPriority={sim.requestPriority}
-          clearIncident={sim.clearIncident}
-        />
-
-        <ChallengeHUD snapshot={sim.snapshot} />
         <EventFeed events={sim.snapshot.events} />
 
         <div className="playback glass">
@@ -122,6 +103,24 @@ export function Traflux() {
         </div>
       </div>
 
+      <ChallengeHUD snapshot={sim.snapshot} />
+      <ControlDock
+        settings={sim.settings}
+        snapshot={sim.snapshot}
+        onShowChallenges={() => setChallengeBrowserOpen(true)}
+        onOpenSandbox={openSandbox}
+        changeWeather={sim.changeWeather}
+        changeTime={sim.changeTime}
+        changeDirectionalDemand={sim.changeDirectionalDemand}
+        changeVehicleMix={sim.changeVehicleMix}
+        setDemandMode={sim.setDemandMode}
+        setRandomIncidents={sim.setRandomIncidents}
+        setCongestionOverlay={sim.setCongestionOverlay}
+        triggerEvent={sim.triggerEvent}
+        dispatch={sim.dispatch}
+        requestPriority={sim.requestPriority}
+        clearIncident={sim.clearIncident}
+      />
       <SignalPanel settings={sim.settings} snapshot={sim.snapshot} changeSetting={sim.changeSetting} />
 
       <div className="bottom-hud">
