@@ -139,7 +139,7 @@ export function Traflux() {
       snapshot={sim.snapshot}
       onRetry={retryChallenge}
       onNext={nextChallenge}
-      onChallenges={() => setChallengeBrowserOpen(true)}
+      onChallenges={() => { sim.openSandbox(); setChallengeBrowserOpen(true); }}
       onSandbox={openSandbox}
     />
   </main>;
