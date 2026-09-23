@@ -43,6 +43,7 @@ function cloneSettings(settings: SimulationSettings): SimulationSettings {
 
 export function useSimulation() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<CityRenderer | null>(null);
   const stateRef = useRef<SimulationState | null>(null);
   const playbackRef = useRef({ paused: false, speed: 1 });
 
@@ -64,6 +65,7 @@ export function useSimulation() {
 
     stateRef.current = createSimulation(settings);
     const renderer = new CityRenderer(canvas);
+    rendererRef.current = renderer;
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     let reducedMotion = media.matches;
     const onMotionChange = () => { reducedMotion = media.matches; };
@@ -91,6 +93,63 @@ export function useSimulation() {
       accumulator = 0;
     };
     document.addEventListener("visibilitychange", onVisibility);
+
+    let dragPointer: number | null = null;
+    let dragX = 0;
+    let dragY = 0;
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      dragPointer = event.pointerId;
+      dragX = event.clientX;
+      dragY = event.clientY;
+      canvas.setPointerCapture(event.pointerId);
+      canvas.classList.add("is-panning");
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId) return;
+      const dx = event.clientX - dragX;
+      const dy = event.clientY - dragY;
+      dragX = event.clientX;
+      dragY = event.clientY;
+      renderer.panByScreen(dx, dy);
+    };
+
+    const finishPointer = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId) return;
+      dragPointer = null;
+      canvas.classList.remove("is-panning");
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const factor = Math.exp(-event.deltaY * .0012);
+      renderer.zoomAt(event.clientX - rect.left, event.clientY - rect.top, factor);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "BUTTON" || target?.tagName === "SUMMARY") return;
+
+      const amount = event.shiftKey ? 90 : 42;
+      if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a") renderer.panByScreen(amount, 0);
+      else if (event.key === "ArrowRight" || event.key.toLowerCase() === "d") renderer.panByScreen(-amount, 0);
+      else if (event.key === "ArrowUp" || event.key.toLowerCase() === "w") renderer.panByScreen(0, amount);
+      else if (event.key === "ArrowDown" || event.key.toLowerCase() === "s") renderer.panByScreen(0, -amount);
+      else return;
+
+      event.preventDefault();
+    };
+
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", finishPointer);
+    canvas.addEventListener("pointercancel", finishPointer);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
 
     const animate = (now: number) => {
       const state = stateRef.current;
@@ -130,6 +189,13 @@ export function useSimulation() {
       resizeObserver.disconnect();
       media.removeEventListener("change", onMotionChange);
       document.removeEventListener("visibilitychange", onVisibility);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", finishPointer);
+      canvas.removeEventListener("pointercancel", finishPointer);
+      canvas.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
+      rendererRef.current = null;
       stateRef.current = null;
     };
     // The engine owns mutable simulation state; React settings are deliberately
@@ -257,6 +323,10 @@ export function useSimulation() {
     setPaused(false);
   }
 
+  function resetCamera() {
+    rendererRef.current?.resetCamera();
+  }
+
   function reset() {
     const current = stateRef.current;
     if (current?.mode === "challenge" && current.challenge) {
@@ -297,6 +367,7 @@ export function useSimulation() {
     clearIncident,
     startChallenge,
     openSandbox,
+    resetCamera,
     reset,
   };
 }
