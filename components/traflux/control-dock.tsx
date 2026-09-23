@@ -113,7 +113,7 @@ export function ControlDock({
       </details>
     </>}
 
-    <div className="dock-section events-section">
+    {!snapshot.challenge && <div className="dock-section events-section">
       <div className="dock-heading"><span>EVENTS</span><small>MANUAL</small></div>
       <div className="event-buttons">
         <button onClick={() => triggerEvent("breakdown")}>Breakdown</button>
@@ -121,7 +121,7 @@ export function ControlDock({
         <button onClick={() => triggerEvent("surge")}>Traffic surge</button>
         <button onClick={() => dispatch()}>Ambulance</button>
       </div>
-    </div>
+    </div>}
 
     <div className="dock-section intervention-section">
       <div className="dock-heading"><span>INTERVENTIONS</span><small>{snapshot.challenge ? "BUDGETED" : "FREE"}</small></div>
