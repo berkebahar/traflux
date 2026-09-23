@@ -1,8 +1,13 @@
 import { LANES, signalFor, vehiclePoint } from "../simulation/engine";
-import type { SimulationState } from "../simulation/types";
+import type { SimulationState, VehicleType } from "../simulation/types";
 
 type Context = CanvasRenderingContext2D;
 const TAU = Math.PI * 2;
+const WORLD_SIZE = 4000;
+const WORLD_HALF = WORLD_SIZE / 2;
+const CAMERA_LIMIT = 1450;
+const MIN_ZOOM = .52;
+const MAX_ZOOM = 1.75;
 
 function rect(ctx: Context, x: number, y: number, w: number, h: number, color: string, radius = 0) {
   ctx.fillStyle = color;
@@ -82,8 +87,80 @@ function arrow(ctx: Context, x: number, y: number) {
   line(ctx, x, y - 10, x + 5, y - 4, "#b9c2b244", 2);
 }
 
+
+function drawOuterCity(ctx: Context) {
+  const roads = [-1500, -900, 900, 1500];
+
+  for (const road of roads) {
+    rect(ctx, road - 48, -WORLD_HALF, 96, WORLD_SIZE, "#252d2f");
+    rect(ctx, -WORLD_HALF, road - 48, WORLD_SIZE, 96, "#252d2f");
+
+    ctx.setLineDash([16, 25]);
+    line(ctx, road, -WORLD_HALF, road, WORLD_HALF, "#c7cfbf2a", 1);
+    line(ctx, -WORLD_HALF, road, WORLD_HALF, road, "#c7cfbf2a", 1);
+    ctx.setLineDash([]);
+
+    line(ctx, road - 43, -WORLD_HALF, road - 43, WORLD_HALF, "#aab5aa20", 1);
+    line(ctx, road + 43, -WORLD_HALF, road + 43, WORLD_HALF, "#aab5aa20", 1);
+    line(ctx, -WORLD_HALF, road - 43, WORLD_HALF, road - 43, "#aab5aa20", 1);
+    line(ctx, -WORLD_HALF, road + 43, WORLD_HALF, road + 43, "#aab5aa20", 1);
+  }
+
+  const centers = [-1770, -1200, -600, 600, 1200, 1770];
+  let seed = 0;
+
+  for (const x of centers) {
+    for (const y of centers) {
+      seed++;
+      if (Math.abs(x) < 780 && Math.abs(y) < 780) continue;
+
+      const blockW = 430 + (seed % 3) * 26;
+      const blockH = 410 + (seed % 4) * 22;
+      rect(ctx, x - blockW / 2, y - blockH / 2, blockW, blockH, "#172220", 13);
+      rect(ctx, x - blockW / 2 + 12, y - blockH / 2 + 12, blockW - 24, blockH - 24, "#202a29", 9);
+
+      const warm = seed % 2 === 0;
+      const bw1 = 150 + (seed % 5) * 14;
+      const bh1 = 105 + (seed % 4) * 15;
+      building(ctx, x - blockW / 2 + 34, y - blockH / 2 + 36, bw1, bh1, warm);
+
+      const bw2 = 120 + ((seed + 2) % 5) * 13;
+      const bh2 = 95 + ((seed + 1) % 4) * 14;
+      building(ctx, x + blockW / 2 - bw2 - 36, y + blockH / 2 - bh2 - 38, bw2, bh2, !warm);
+
+      if (seed % 3 === 0) {
+        rect(ctx, x - 68, y - 55, 136, 110, "#1b2924", 8);
+        for (let i = 0; i < 6; i++) tree(ctx, x - 48 + (i % 3) * 48, y - 28 + Math.floor(i / 3) * 58, 12 + (i % 2) * 3, seed + i);
+      } else {
+        for (let i = 0; i < 4; i++) {
+          const tx = x - blockW / 2 + 30 + ((i * 79 + seed * 17) % Math.max(60, blockW - 70));
+          const ty = y + blockH / 2 - 25 - (i % 2) * 18;
+          tree(ctx, tx, ty, 10 + (seed + i) % 4, seed + i);
+        }
+      }
+
+      for (let i = 0; i < 5; i++) {
+        const px = x - blockW / 2 + 35 + i * 34;
+        const py = y + blockH / 2 - 17;
+        rect(ctx, px, py, 18, 7, ["#46565a", "#6d746a", "#8a7965"][i % 3], 2);
+      }
+    }
+  }
+
+  ctx.save();
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#9eafa044";
+  ctx.fillText("RIVER WARD", -1200, -1825);
+  ctx.fillText("NORTH MARKET", 1180, -1825);
+  ctx.fillText("WEST INDUSTRIAL", -1710, 1260);
+  ctx.fillText("EAST DISTRICT", 1710, 1260);
+  ctx.restore();
+}
+
 function drawCity(ctx: Context) {
-  rect(ctx, -1800, -1800, 3600, 3600, "#101a1b");
+  rect(ctx, -WORLD_HALF, -WORLD_HALF, WORLD_SIZE, WORLD_SIZE, "#101a1b");
+  drawOuterCity(ctx);
   // Sidewalks wrap the four city blocks.
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
     ctx.save(); ctx.scale(sx, sy);
@@ -181,105 +258,415 @@ function drawCity(ctx: Context) {
   ctx.fillText("EAST AVENUE", 319, 72);
 }
 
-function carSprite(color: string, braking: boolean): HTMLCanvasElement {
-  const canvas = document.createElement("canvas"); canvas.width = 128; canvas.height = 72;
+function vehicleSprite(type: VehicleType, color: string, braking: boolean): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = 160;
+  canvas.height = 80;
   const ctx = canvas.getContext("2d")!;
-  ctx.scale(2, 2); ctx.translate(21, 18);
-  // Headlight pools point forward, with a much softer bloom than the lamps.
-  const beam = ctx.createLinearGradient(9, 0, 40, 0);
-  beam.addColorStop(0, "#e5f5dd24"); beam.addColorStop(1, "#e5f5dd00");
+  ctx.scale(2, 2);
+  ctx.translate(25, 20);
+
+  const motorcycle = type === "motorcycle";
+  const bus = type === "bus";
+  const truck = type === "truck";
+  const vanLike = type === "van" || type === "ambulance";
+  const emergency = type === "police" || type === "ambulance" || type === "fire";
+
+  const bodyHalf = motorcycle ? 8 : bus ? 13 : truck ? 12 : vanLike ? 11 : type === "suv" ? 11 : 10.5;
+  const bodyWidth = motorcycle ? 4 : bus || truck || type === "fire" ? 6.4 : 5.5;
+  const displayColor =
+    type === "police" ? "#d8deda" :
+    type === "ambulance" ? "#e6e4d8" :
+    type === "fire" ? "#a84e43" :
+    color;
+
+  const beam = ctx.createLinearGradient(bodyHalf - 1, 0, bodyHalf + 36, 0);
+  beam.addColorStop(0, "#e5f5dd20");
+  beam.addColorStop(1, "#e5f5dd00");
   ctx.fillStyle = beam;
-  ctx.beginPath(); ctx.moveTo(9, -4); ctx.lineTo(39, -12); ctx.lineTo(39, 12); ctx.lineTo(9, 4); ctx.fill();
-  rect(ctx, -11, -5, 24, 12, "#00000080", 3);
-  rect(ctx, -10.5, -5.5, 21, 11, color, 3);
-  rect(ctx, -6, -4, 10, 8, "#142126", 2);
-  rect(ctx, -3.5, -3.7, 5, 7.4, color, 1);
-  line(ctx, -8, -4.6, 6, -4.6, "#ffffff40", 0.7);
-  rect(ctx, 7, -4, 2, 8, color, 1);
-  for (const y of [-3.7, 2.2]) {
-    rect(ctx, 9, y, 1.5, 1.7, "#efffdf", 0.4);
-    glow(ctx, -10.5, y + 0.6, braking ? 9 : 4, braking ? "#ff493967" : "#ff49392b");
-    rect(ctx, -11, y, 1.5, 1.7, braking ? "#ff6c52" : "#cb493e", 0.3);
+  ctx.beginPath();
+  ctx.moveTo(bodyHalf - 1, -bodyWidth + 1);
+  ctx.lineTo(bodyHalf + 34, -bodyWidth * 2.2);
+  ctx.lineTo(bodyHalf + 34, bodyWidth * 2.2);
+  ctx.lineTo(bodyHalf - 1, bodyWidth - 1);
+  ctx.fill();
+
+  if (motorcycle) {
+    rect(ctx, -7, -1.8, 14, 3.6, "#0b1113", 1.5);
+    rect(ctx, -4, -1.2, 8, 2.4, displayColor, 1);
+    ctx.beginPath(); ctx.arc(-6, 0, 2.2, 0, TAU); ctx.fillStyle = "#080c0e"; ctx.fill();
+    ctx.beginPath(); ctx.arc(6, 0, 2.2, 0, TAU); ctx.fill();
+    rect(ctx, 4.8, -1.2, 1.2, 2.4, "#efffdf", .4);
+    rect(ctx, -6.2, -1.2, 1.1, 2.4, braking ? "#ff6c52" : "#cb493e", .3);
+    return canvas;
   }
+
+  rect(ctx, -bodyHalf - .7, -bodyWidth - .7, bodyHalf * 2 + 1.4, bodyWidth * 2 + 1.4, "#00000080", 3);
+  rect(ctx, -bodyHalf, -bodyWidth, bodyHalf * 2, bodyWidth * 2, displayColor, 3);
+
+  if (bus) {
+    rect(ctx, -8, -bodyWidth + 1, 16, bodyWidth * 2 - 2, "#172327", 2);
+    for (let x = -7; x <= 6; x += 4) rect(ctx, x, -bodyWidth + 1.4, 2.5, bodyWidth * 2 - 2.8, "#68808366", .7);
+    rect(ctx, -bodyHalf + 2, -bodyWidth + 1, 3, bodyWidth * 2 - 2, "#c8b66b55", 1);
+  } else if (truck || type === "fire") {
+    rect(ctx, -bodyHalf + 1, -bodyWidth + 1, bodyHalf * 1.05, bodyWidth * 2 - 2, type === "fire" ? "#873c34" : "#596568", 2);
+    rect(ctx, 2, -bodyWidth + 1.2, bodyHalf - 3, bodyWidth * 2 - 2.4, "#172327", 2);
+    if (type === "fire") {
+      for (let x = -7; x < 2; x += 3) line(ctx, x, -bodyWidth + 1, x, bodyWidth - 1, "#d7c8a960", .8);
+    }
+  } else {
+    rect(ctx, -5.5, -bodyWidth + 1.1, 10, bodyWidth * 2 - 2.2, "#142126", 2);
+    rect(ctx, -2.7, -bodyWidth + 1.4, 4.5, bodyWidth * 2 - 2.8, displayColor, 1);
+  }
+
+  if (type === "police") {
+    rect(ctx, -2.5, -bodyWidth - .8, 5, 1.7, "#11191d", .5);
+    line(ctx, -bodyHalf + 2, 0, bodyHalf - 2, 0, "#5c728060", 1);
+  } else if (type === "ambulance") {
+    line(ctx, -bodyHalf + 2, 0, bodyHalf - 2, 0, "#ad5c526f", 1.2);
+    rect(ctx, -1.6, -bodyWidth - .8, 3.2, 1.7, "#141a1c", .5);
+  }
+
+  line(ctx, -bodyHalf + 2, -bodyWidth + .6, bodyHalf - 4, -bodyWidth + .6, "#ffffff35", .6);
+  for (const y of [-bodyWidth + 1.4, bodyWidth - 2.8]) {
+    rect(ctx, bodyHalf - 1.8, y, 1.4, 1.5, "#efffdf", .4);
+    glow(ctx, -bodyHalf - .2, y + .5, braking ? 8 : 3.5, braking ? "#ff49395f" : "#ff493925");
+    rect(ctx, -bodyHalf - .2, y, 1.4, 1.5, braking ? "#ff6c52" : "#cb493e", .3);
+  }
+
+  if (emergency) rect(ctx, -1.8, -bodyWidth - 1, 3.6, 1.4, "#0b1114", .5);
   return canvas;
 }
 
-/** Static city and vehicle sprites are rasterized once, keeping each frame inexpensive. */
+function drawQueueEdges(ctx: Context, state: SimulationState) {
+  if (!state.settings.showCongestion) return;
+
+  for (const lane of LANES) {
+    const queued = state.vehicles.filter(
+      (vehicle) => vehicle.laneId === lane.id && vehicle.speed < 2 && vehicle.position < -100,
+    ).length;
+    if (!queued) continue;
+
+    const point = vehiclePoint(lane, -158);
+    const length = 12 + Math.min(queued, 12) * 2.4;
+    const alpha = .2 + Math.min(queued / 12, 1) * .28;
+
+    ctx.save();
+    ctx.translate(point.x, point.y);
+    ctx.rotate(lane.angle);
+    ctx.fillStyle = `rgba(218,174,103,${alpha})`;
+    ctx.fillRect(-length / 2, lane.offset > 30 ? 12 : -15, length, 2);
+    ctx.restore();
+  }
+}
+
+function drawWorldEnvironment(ctx: Context, state: SimulationState, reducedMotion: boolean) {
+  const visuals = state.environment.visuals;
+
+  if (visuals.wetness > .05) {
+    ctx.globalAlpha = visuals.wetness * .18;
+    for (let i = -620; i <= 620; i += 85) {
+      line(ctx, -55, i, -24, i + 18, "#b8c8c6", 1);
+      line(ctx, i, 31, i + 24, 43, "#b8c8c6", 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (visuals.snow > .05) {
+    ctx.globalAlpha = visuals.snow * .38;
+    line(ctx, -77, -700, -77, 700, "#dce5df", 4);
+    line(ctx, 77, -700, 77, 700, "#dce5df", 4);
+    line(ctx, -700, -77, 700, -77, "#dce5df", 4);
+    line(ctx, -700, 77, 700, 77, "#dce5df", 4);
+    ctx.globalAlpha = 1;
+  }
+
+  drawQueueEdges(ctx, state);
+
+  for (const incident of state.incidents) {
+    if (incident.status !== "active" || incident.laneId === null) continue;
+    const point = vehiclePoint(LANES[incident.laneId], incident.position);
+    const pulse = reducedMotion ? 1 : .72 + Math.sin(state.time * 4) * .18;
+    const size = 19 + pulse * 3;
+    const corner = 7;
+    ctx.strokeStyle = incident.kind === "collision" ? `rgba(235,132,104,${pulse})` : `rgba(224,188,105,${pulse})`;
+    ctx.lineWidth = 1.4;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+      const x = point.x + sx * size;
+      const y = point.y + sy * size;
+      ctx.beginPath();
+      ctx.moveTo(x, y + sy * -corner);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x + sx * -corner, y);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawScreenWeather(ctx: Context, state: SimulationState, width: number, height: number, dpr: number, reducedMotion: boolean) {
+  const visuals = state.environment.visuals;
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  if (visuals.daylight > .02) {
+    ctx.fillStyle = `rgba(151,166,148,${visuals.daylight * .13})`;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  if (visuals.cold > .05) {
+    ctx.fillStyle = `rgba(132,160,171,${visuals.cold * .07})`;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  if (!reducedMotion && visuals.rain > .03) {
+    const count = Math.round(45 + visuals.rain * 95);
+    ctx.strokeStyle = `rgba(191,211,214,${.12 + visuals.rain * .18})`;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < count; i++) {
+      const x = ((i * 83 + state.time * (180 + (i % 7) * 12)) % (width + 120)) - 60;
+      const y = ((i * 137 + state.time * (420 + (i % 5) * 18)) % (height + 100)) - 50;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - 8 - visuals.rain * 8, y + 20 + visuals.rain * 15);
+      ctx.stroke();
+    }
+  }
+
+  if (!reducedMotion && visuals.snow > .03) {
+    const count = Math.round(35 + visuals.snow * 70);
+    ctx.fillStyle = `rgba(232,239,235,${.28 + visuals.snow * .28})`;
+    for (let i = 0; i < count; i++) {
+      const x = ((i * 109 + state.time * (16 + i % 4)) % (width + 60)) - 30;
+      const y = ((i * 71 + state.time * (28 + i % 5)) % (height + 60)) - 30;
+      ctx.beginPath();
+      ctx.arc(x, y, .8 + (i % 3) * .45, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  if (visuals.fog > .03) {
+    const fog = ctx.createLinearGradient(0, height * .15, width, height * .85);
+    fog.addColorStop(0, `rgba(174,190,185,${visuals.fog * .11})`);
+    fog.addColorStop(.45, `rgba(151,171,168,${visuals.fog * .2})`);
+    fog.addColorStop(1, `rgba(190,200,193,${visuals.fog * .1})`);
+    ctx.fillStyle = fog;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  if (!reducedMotion && visuals.rain > .8) {
+    const lightning = Math.max(0, Math.sin(state.time * .51) - .992) * 4.5;
+    if (lightning > 0) {
+      ctx.fillStyle = `rgba(218,229,226,${Math.min(.16, lightning)})`;
+      ctx.fillRect(0, 0, width, height);
+    }
+  }
+
+  ctx.restore();
+}
+
+/** A cached large world plus a lightweight pan/zoom camera keeps navigation smooth. */
 export class CityRenderer {
   private context: Context;
-  private backdrop = document.createElement("canvas");
+  private worldBackdrop = document.createElement("canvas");
   private sprites = new Map<string, HTMLCanvasElement>();
   private width = 0;
   private height = 0;
-  private scale = 1;
+  private baseScale = 1;
   private centerX = 0;
   private centerY = 0;
   private dpr = 1;
+  private camera = { x: 0, y: 0, zoom: 1 };
 
   constructor(private canvas: HTMLCanvasElement) {
     this.context = canvas.getContext("2d", { alpha: false })!;
+    this.buildWorld();
+  }
+
+  private buildWorld() {
+    this.worldBackdrop.width = WORLD_SIZE;
+    this.worldBackdrop.height = WORLD_SIZE;
+    const ctx = this.worldBackdrop.getContext("2d")!;
+    ctx.save();
+    ctx.translate(WORLD_HALF, WORLD_HALF);
+    drawCity(ctx);
+    ctx.restore();
   }
 
   resize(width: number, height: number) {
-    this.width = width; this.height = height;
+    this.width = width;
+    this.height = height;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = this.backdrop.width = Math.round(width * this.dpr);
-    this.canvas.height = this.backdrop.height = Math.round(height * this.dpr);
+    this.canvas.width = Math.round(width * this.dpr);
+    this.canvas.height = Math.round(height * this.dpr);
+
     const reserve = width > 900 ? 290 : 0;
-    this.scale = Math.max(Math.min((width - reserve) / 980, height / 810), (width - reserve) / 1240, height / 1240);
+    this.baseScale = Math.max(
+      Math.min((width - reserve) / 980, height / 810),
+      (width - reserve) / 1240,
+      height / 1240,
+    );
     this.centerX = (width - reserve) / 2;
-    this.centerY = height * 0.51;
-    const ctx = this.backdrop.getContext("2d")!;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = "#111a1b"; ctx.fillRect(0, 0, width, height);
-    ctx.translate(this.centerX, this.centerY); ctx.scale(this.scale, this.scale);
-    drawCity(ctx);
+    this.centerY = height * .51;
+  }
+
+  panByScreen(dx: number, dy: number) {
+    const scale = this.baseScale * this.camera.zoom;
+    if (!scale) return;
+    this.camera.x = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, this.camera.x - dx / scale));
+    this.camera.y = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, this.camera.y - dy / scale));
+  }
+
+  zoomAt(screenX: number, screenY: number, factor: number) {
+    const previousZoom = this.camera.zoom;
+    const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, previousZoom * factor));
+    if (Math.abs(nextZoom - previousZoom) < .0001) return;
+
+    const previousScale = this.baseScale * previousZoom;
+    const nextScale = this.baseScale * nextZoom;
+    const worldX = this.camera.x + (screenX - this.centerX) / previousScale;
+    const worldY = this.camera.y + (screenY - this.centerY) / previousScale;
+
+    this.camera.zoom = nextZoom;
+    this.camera.x = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, worldX - (screenX - this.centerX) / nextScale));
+    this.camera.y = Math.max(-CAMERA_LIMIT, Math.min(CAMERA_LIMIT, worldY - (screenY - this.centerY) / nextScale));
+  }
+
+  resetCamera() {
+    this.camera = { x: 0, y: 0, zoom: 1 };
   }
 
   render(state: SimulationState, interpolation: number, reducedMotion: boolean) {
     const ctx = this.context;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.backdrop, 0, 0);
+    const worldScale = this.baseScale * this.camera.zoom;
+
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.save(); ctx.translate(this.centerX, this.centerY); ctx.scale(this.scale, this.scale);
+    ctx.fillStyle = "#10191b";
+    ctx.fillRect(0, 0, this.width, this.height);
+
+    ctx.save();
+    ctx.translate(this.centerX, this.centerY);
+    ctx.scale(worldScale, worldScale);
+    ctx.translate(-this.camera.x, -this.camera.y);
+
+    ctx.drawImage(
+      this.worldBackdrop,
+      -WORLD_HALF,
+      -WORLD_HALF,
+      WORLD_SIZE,
+      WORLD_SIZE,
+    );
+
+    drawWorldEnvironment(ctx, state, reducedMotion);
+
     for (const vehicle of state.vehicles) {
       const lane = LANES[vehicle.laneId];
       const p = vehicle.previousPosition + (vehicle.position - vehicle.previousPosition) * interpolation;
       const point = vehiclePoint(lane, p);
-      const key = vehicle.color + vehicle.braking;
+      const incident = vehicle.incidentId === null ? null : state.incidents.find((item) => item.id === vehicle.incidentId && item.status === "active");
+      const collisionAge = incident?.kind === "collision" ? state.time - incident.startedAt : 99;
+      const collisionJolt = collisionAge < 1.1 && !reducedMotion
+        ? Math.sin(collisionAge * 16) * .075 * Math.max(0, 1 - collisionAge / 1.1)
+        : 0;
+
+      const key = vehicle.type + ":" + vehicle.color + ":" + vehicle.braking;
       let sprite = this.sprites.get(key);
-      if (!sprite) { sprite = carSprite(vehicle.color, vehicle.braking); this.sprites.set(key, sprite); }
-      ctx.save(); ctx.translate(point.x, point.y); ctx.rotate(lane.angle); ctx.scale(vehicle.length / 21, 1);
-      ctx.drawImage(sprite, -21, -18, 64, 36); ctx.restore();
+      if (!sprite) {
+        sprite = vehicleSprite(vehicle.type, vehicle.color, vehicle.braking);
+        this.sprites.set(key, sprite);
+      }
+
+      if (state.environment.visuals.rain > .2 && vehicle.speed > 22 && !reducedMotion) {
+        ctx.save();
+        ctx.translate(point.x, point.y);
+        ctx.rotate(lane.angle);
+        ctx.strokeStyle = `rgba(180,202,203,${state.environment.visuals.rain * .18})`;
+        ctx.lineWidth = 1;
+        for (let spray = -1; spray <= 1; spray += 2) {
+          ctx.beginPath();
+          ctx.moveTo(-vehicle.length * .45, spray * vehicle.width * .3);
+          ctx.lineTo(-vehicle.length * .75 - (state.time * 20 % 8), spray * (vehicle.width * .55 + 2));
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.translate(point.x, point.y);
+      ctx.rotate(lane.angle + collisionJolt);
+      ctx.scale(vehicle.length / 21, Math.max(.5, vehicle.width / 11));
+      ctx.drawImage(sprite, -25, -20, 80, 40);
+
+      if (vehicle.emergency) {
+        const flash = reducedMotion ? .7 : (Math.floor(state.time * 6) % 2 === 0 ? 1 : .38);
+        glow(ctx, 0, -3, 11, `rgba(73,143,255,${.24 * flash})`);
+        glow(ctx, 0, 3, 11, `rgba(255,91,76,${.22 * (1.2 - flash * .55)})`);
+        rect(ctx, -1.6, -4.5, 1.5, 2, "#5ea0ff", .4);
+        rect(ctx, .2, -4.5, 1.5, 2, "#f36d62", .4);
+      }
+
+      if (incident) {
+        const hazardsOn = reducedMotion || Math.floor(state.time * 2.7) % 2 === 0;
+        if (hazardsOn) {
+          glow(ctx, -8, -5, 9, "#f2b24a45");
+          glow(ctx, -8, 5, 9, "#f2b24a45");
+          rect(ctx, -9, -5, 1.5, 1.8, "#f4c369", .4);
+          rect(ctx, -9, 3.2, 1.5, 1.8, "#f4c369", .4);
+        }
+      }
+
+      ctx.restore();
     }
+
     for (let side = 0; side < 4; side++) {
       const axis = side % 2 === 0 ? "ns" : "ew";
       const active = signalFor(state, axis);
-      ctx.save(); ctx.rotate(side * Math.PI / 2);
+      ctx.save();
+      ctx.rotate(side * Math.PI / 2);
       line(ctx, 76, 119, 50, 119, "#0e1718", 3);
       rect(ctx, 63, 111, 10, 26, "#080e10", 3);
       const colors = { red: "#ff6553", amber: "#ffc568", green: "#a6e6b4" };
+
       for (const [i, color] of (["red", "amber", "green"] as const).entries()) {
         const y = 116 + i * 8;
         if (active === color) glow(ctx, 68, y, 22, colors[color] + "48");
-        ctx.beginPath(); ctx.arc(68, y, 2.6, 0, TAU);
-        ctx.fillStyle = active === color ? colors[color] : "#24302b"; ctx.fill();
+        ctx.beginPath();
+        ctx.arc(68, y, 2.6, 0, TAU);
+        ctx.fillStyle = active === color ? colors[color] : "#24302b";
+        ctx.fill();
       }
-      glow(ctx, 47, 113, 46, colors[active] + "0e");
+
+      if (state.lights.priorityAxis === axis) glow(ctx, 47, 113, 58, "#c9eda825");
+      else glow(ctx, 47, 113, 46, colors[active] + "0e");
       ctx.restore();
     }
-    if (!reducedMotion) {
-      for (let i = 0; i < 28; i++) {
-        const x = ((i * 137 + state.time * (1 + i % 3)) % 1200) - 600;
-        const y = ((i * 233 + state.time * 0.8) % 1000) - 500;
-        ctx.fillStyle = `rgba(215,226,206,${0.08 + Math.sin(state.time * 0.2 + i) * 0.035})`;
-        ctx.beginPath(); ctx.arc(x, y, 0.65 + (i % 3) * 0.2, 0, TAU); ctx.fill();
+
+    if (!reducedMotion && state.environment.visuals.rain < .15 && state.environment.visuals.snow < .15) {
+      for (let i = 0; i < 38; i++) {
+        const x = ((i * 137 + state.time * (1 + i % 3)) % 3000) - 1500;
+        const y = ((i * 233 + state.time * .8) % 2600) - 1300;
+        ctx.fillStyle = `rgba(215,226,206,${.07 + Math.sin(state.time * .2 + i) * .03})`;
+        ctx.beginPath();
+        ctx.arc(x, y, .65 + (i % 3) * .2, 0, TAU);
+        ctx.fill();
       }
     }
+
     ctx.restore();
-    // Gentle lens falloff keeps the eye on the intersection.
-    const vignette = ctx.createRadialGradient(this.centerX, this.centerY, this.height * 0.15, this.centerX, this.centerY, Math.max(this.width, this.height) * 0.75);
-    vignette.addColorStop(0, "#070e1000"); vignette.addColorStop(1, "#070e10bc");
-    ctx.fillStyle = vignette; ctx.fillRect(0, 0, this.width, this.height);
+
+    drawScreenWeather(ctx, state, this.width, this.height, this.dpr, reducedMotion);
+
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const vignette = ctx.createRadialGradient(
+      this.centerX,
+      this.centerY,
+      this.height * .15,
+      this.centerX,
+      this.centerY,
+      Math.max(this.width, this.height) * .78,
+    );
+    vignette.addColorStop(0, "#070e1000");
+    vignette.addColorStop(1, "#070e10b2");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, this.width, this.height);
   }
 }

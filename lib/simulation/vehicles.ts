@@ -18,7 +18,7 @@ export const DEFAULT_SETTINGS: SimulationSettings = {
   nsGreen: 18, ewGreen: 18, demand: 1, demandMode: "auto",
   directionalDemand: { north: 1, south: 1, east: 1, west: 1 },
   vehicleMix: { heavy: 12, motorcycle: 6, emergency: 1, normal: "balanced" },
-  emergencyPriority: true, randomIncidents: false, showCongestion: true,
+  emergencyPriority: true, randomIncidents: true, showCongestion: false,
 };
 export function normalizeMix(mix: VehicleMix): VehicleMix {
   const next = { ...mix, heavy: Math.max(0, Math.min(80, mix.heavy)), motorcycle: Math.max(0, Math.min(80, mix.motorcycle)), emergency: Math.max(0, Math.min(20, mix.emergency)) };
