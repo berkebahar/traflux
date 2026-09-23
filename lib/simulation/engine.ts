@@ -1,11 +1,23 @@
-import type { Axis, Lane, Metrics, SignalColor, SignalPhase, SimulationSettings, SimulationSnapshot, SimulationState, Vehicle, WeatherModifiers } from "./types";
+import { createEnvironment, stepEnvironment } from "./environment";
+import { VEHICLE_CLASSES, DEFAULT_SETTINGS as VEHICLE_DEFAULT_SETTINGS, makeVehicle } from "./vehicles";
+import type {
+  Axis,
+  Lane,
+  Metrics,
+  SignalColor,
+  SignalPhase,
+  SimulationSettings,
+  SimulationSnapshot,
+  SimulationState,
+  Vehicle,
+} from "./types";
 
 export const FIXED_STEP = 1 / 60;
 export const WORLD_EDGE = 660;
 export const STOP_POSITION = -124;
 export const CLEAR_POSITION = 96;
-export const DEFAULT_SETTINGS: SimulationSettings = { nsGreen: 18, ewGreen: 18, demand: 1 };
-export const CLEAR_NIGHT: WeatherModifiers = { speed: 1, brakingDistance: 1, roadCapacity: 1, demand: 1 };
+export const DEFAULT_SETTINGS: SimulationSettings = VEHICLE_DEFAULT_SETTINGS;
+
 export const LANES: Lane[] = [
   { id: 0, origin: "north", axis: "ns", offset: 20, angle: Math.PI / 2 },
   { id: 1, origin: "north", axis: "ns", offset: 48, angle: Math.PI / 2 },
@@ -16,40 +28,62 @@ export const LANES: Lane[] = [
   { id: 6, origin: "west", axis: "ew", offset: 20, angle: 0 },
   { id: 7, origin: "west", axis: "ew", offset: 48, angle: 0 },
 ];
-const COLORS = ["#d9dcd5", "#7e939c", "#c6bfb0", "#536b72", "#ad6657", "#c2aa70", "#566877", "#a5b6b0"];
+
 const PHASES: SignalPhase[] = ["ns-green", "ns-amber", "ns-clear", "ew-green", "ew-amber", "ew-clear"];
-const MAX_SPEED = 72;
-const ACCELERATION = 24;
-const BRAKING = 46;
-const GAP = 12;
 
-function random(state: SimulationState): number {
-  state.randomSeed = (Math.imul(1664525, state.randomSeed) + 1013904223) >>> 0;
-  return state.randomSeed / 4294967296;
-}
-
-function makeVehicle(state: SimulationState, laneId: number, position: number): Vehicle {
+function cloneSettings(settings: SimulationSettings): SimulationSettings {
   return {
-    id: state.nextId++, laneId, position, previousPosition: position,
-    speed: MAX_SPEED * state.weather.speed, length: random(state) > 0.82 ? 25 : 21,
-    color: COLORS[Math.floor(random(state) * COLORS.length)], waitTime: 0,
-    braking: false, committed: false, passed: false,
+    ...settings,
+    directionalDemand: { ...settings.directionalDemand },
+    vehicleMix: { ...settings.vehicleMix },
   };
 }
 
 export function createSimulation(settings: SimulationSettings = DEFAULT_SETTINGS): SimulationState {
   const state: SimulationState = {
-    time: 0, vehicles: [], lights: { phase: "ns-green", elapsed: 0 },
-    settings: { ...settings }, weather: { ...CLEAR_NIGHT },
+    time: 0,
+    mode: "sandbox",
+    vehicles: [],
+    lights: { phase: "ns-green", elapsed: 0, priorityAxis: null },
+    settings: cloneSettings(settings),
+    environment: createEnvironment("clear", "night"),
     spawnTimers: LANES.map((lane) => 0.3 + lane.id * 0.29),
-    nextId: 1, randomSeed: 2048, passed: 0, completedWait: 0, recentPasses: [],
+    nextId: 1,
+    randomSeed: 2048,
+    incidentSeed: 99173,
+    passed: 0,
+    completedWait: 0,
+    recentPasses: [],
+    maxQueue: 0,
+    totalIdleTime: 0,
+    weightedIdleTime: 0,
+    passengerThroughput: 0,
+    passedByType: {
+      compact: 0, sedan: 0, suv: 0, van: 0, truck: 0,
+      bus: 0, motorcycle: 0, police: 0, ambulance: 0, fire: 0,
+    },
+    incidents: [],
+    responses: [],
+    events: [],
+    nextEventId: 1,
+    nextIncidentId: 1,
+    nextResponseId: 1,
+    nextRandomIncidentAt: 45,
+    priority: null,
+    challenge: null,
   };
-  // Seed approaching traffic so the scene is alive from the first frame.
+
   for (const lane of LANES) {
     for (let i = 0; i < 4; i++) {
-      const position = -190 - i * 115 - random(state) * 38;
+      const position = -190 - i * 115 - ((lane.id * 37 + i * 53) % 38);
       const vehicle = makeVehicle(state, lane.id, position);
-      if (lane.axis === "ew") vehicle.speed = Math.min(vehicle.speed, Math.sqrt(2 * BRAKING * (STOP_POSITION - position)));
+      const config = VEHICLE_CLASSES[vehicle.type];
+      if (lane.axis === "ew") {
+        vehicle.speed = Math.min(
+          vehicle.speed,
+          Math.sqrt(2 * config.deceleration * Math.max(0, STOP_POSITION - position)),
+        );
+      }
       state.vehicles.push(vehicle);
     }
   }
@@ -71,105 +105,254 @@ export function phaseDuration(state: SimulationState): number {
 function updateSignals(state: SimulationState, dt: number) {
   state.lights.elapsed += dt;
   if (state.lights.elapsed < phaseDuration(state)) return;
-  // All-red extends until the last committed vehicle has cleared the conflict area.
-  if (state.lights.phase.endsWith("clear") && state.vehicles.some((v) => v.committed && v.position < CLEAR_POSITION)) return;
+
+  if (
+    state.lights.phase.endsWith("clear") &&
+    state.vehicles.some((vehicle) => vehicle.committed && vehicle.position < CLEAR_POSITION)
+  ) return;
+
   const oldPhase = state.lights.phase;
   state.lights.phase = PHASES[(PHASES.indexOf(oldPhase) + 1) % PHASES.length];
   state.lights.elapsed = 0;
+
   if (state.lights.phase.endsWith("amber")) {
     const axis = state.lights.phase.startsWith("ns") ? "ns" : "ew";
-    const deceleration = BRAKING / state.weather.brakingDistance;
-    for (const v of state.vehicles) {
-      // Vehicles too close to stop comfortably finish crossing during clearance.
-      if (LANES[v.laneId].axis === axis && v.position < STOP_POSITION && STOP_POSITION - v.position < v.speed ** 2 / (2 * deceleration) + 3) v.committed = true;
+    for (const vehicle of state.vehicles) {
+      if (LANES[vehicle.laneId].axis !== axis || vehicle.position >= STOP_POSITION) continue;
+      const config = VEHICLE_CLASSES[vehicle.type];
+      const deceleration = config.deceleration / state.environment.modifiers.brakingDistance;
+      const stoppingDistance = vehicle.speed ** 2 / (2 * Math.max(1, deceleration)) + 3;
+      if (STOP_POSITION - vehicle.position < stoppingDistance) vehicle.committed = true;
     }
   }
+}
+
+function activeLaneBlock(state: SimulationState, laneId: number): number | null {
+  let nearest: number | null = null;
+  for (const incident of state.incidents) {
+    if (incident.status !== "active" || incident.laneId !== laneId) continue;
+    if (nearest === null || incident.position < nearest) nearest = incident.position;
+  }
+  return nearest;
 }
 
 /** Mutates only the supplied state. Call with FIXED_STEP for reproducible runs. */
 export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP): void {
   state.time += dt;
+  stepEnvironment(state.environment, dt);
   updateSignals(state, dt);
-  const speedLimit = MAX_SPEED * state.weather.speed;
-  const deceleration = BRAKING / state.weather.brakingDistance;
-  const gap = GAP / state.weather.roadCapacity;
 
   for (const lane of LANES) {
-    const cars = state.vehicles.filter((v) => v.laneId === lane.id).sort((a, b) => b.position - a.position);
+    const cars = state.vehicles
+      .filter((vehicle) => vehicle.laneId === lane.id)
+      .sort((a, b) => b.position - a.position);
+
     let leader: Vehicle | undefined;
+    const laneBlock = activeLaneBlock(state, lane.id);
+
     for (const car of cars) {
+      const config = VEHICLE_CLASSES[car.type];
+      const speedLimit = config.maxSpeed * state.environment.modifiers.speed;
+      const deceleration = config.deceleration / state.environment.modifiers.brakingDistance;
+      const acceleration = config.acceleration;
+      const desiredGap =
+        config.followingGap *
+        state.environment.modifiers.followingDistance /
+        Math.max(0.45, state.environment.modifiers.roadCapacity);
+
       car.previousPosition = car.position;
       let limit = Infinity;
       let targetSpeed = speedLimit;
+
       if (leader) {
-        limit = leader.position - (leader.length + car.length) / 2 - gap;
+        const leaderConfig = VEHICLE_CLASSES[leader.type];
+        const sharedGap = Math.max(desiredGap, leaderConfig.followingGap * state.environment.modifiers.followingDistance);
+        limit = leader.position - (leader.length + car.length) / 2 - sharedGap;
         const distance = Math.max(0, limit - car.position);
-        targetSpeed = Math.min(targetSpeed, Math.sqrt(leader.speed ** 2 + 2 * deceleration * distance), distance / 0.65);
+        targetSpeed = Math.min(
+          targetSpeed,
+          Math.sqrt(Math.max(0, leader.speed ** 2 + 2 * deceleration * distance)),
+          distance / 0.65,
+        );
       }
+
+      if (laneBlock !== null && car.position < laneBlock) {
+        const blockLimit = laneBlock - car.length / 2 - desiredGap;
+        limit = Math.min(limit, blockLimit);
+        targetSpeed = Math.min(
+          targetSpeed,
+          Math.sqrt(2 * deceleration * Math.max(0, blockLimit - car.position)),
+        );
+      }
+
       if (!car.committed && car.position <= STOP_POSITION && signalFor(state, lane.axis) !== "green") {
         limit = Math.min(limit, STOP_POSITION);
-        targetSpeed = Math.min(targetSpeed, Math.sqrt(2 * deceleration * Math.max(0, STOP_POSITION - car.position)));
+        targetSpeed = Math.min(
+          targetSpeed,
+          Math.sqrt(2 * deceleration * Math.max(0, STOP_POSITION - car.position)),
+        );
       }
+
       const oldSpeed = car.speed;
-      car.speed = Math.max(0, Math.min(oldSpeed + ACCELERATION * dt, Math.max(targetSpeed, oldSpeed - deceleration * dt)));
-      // A future capacity change may increase the desired gap instantly. Hold
-      // position until it opens; never move a vehicle backwards to create space.
-      const nextPosition = Math.max(car.position, Math.min(limit, car.position + car.speed * dt));
+      car.speed = Math.max(
+        0,
+        Math.min(
+          oldSpeed + acceleration * dt,
+          Math.max(targetSpeed, oldSpeed - deceleration * dt),
+        ),
+      );
+
+      const nextPosition = Math.max(
+        car.position,
+        Math.min(limit, car.position + car.speed * dt),
+      );
       car.speed = Math.max(0, (nextPosition - car.position) / dt);
       car.position = nextPosition;
       car.braking = car.speed < oldSpeed - 0.1 || car.speed < 2;
+
       if (car.position > STOP_POSITION) car.committed = true;
-      if (car.speed < 2 && car.position <= STOP_POSITION) car.waitTime += dt;
+      if (car.speed < 2 && car.position <= STOP_POSITION) {
+        car.waitTime += dt;
+        state.totalIdleTime += dt;
+        state.weightedIdleTime += dt * config.idleWeight;
+      }
+
       if (!car.passed && car.position > CLEAR_POSITION) {
         car.passed = true;
         state.passed++;
         state.completedWait += car.waitTime;
         state.recentPasses.push(state.time);
+        state.passengerThroughput += config.passengerValue;
+        state.passedByType[car.type]++;
       }
+
       leader = car;
     }
-    // Demand changes affect the next arrival immediately; blocked entries never overlap.
-    state.spawnTimers[lane.id] -= dt * state.settings.demand * state.weather.demand;
+
+    const directionalDemand = state.settings.directionalDemand[lane.origin];
+    const timeDemand = state.settings.demandMode === "auto" ? state.environment.automaticDemand : 1;
+    const effectiveDemand =
+      state.settings.demand *
+      directionalDemand *
+      timeDemand *
+      state.environment.modifiers.demand;
+
+    state.spawnTimers[lane.id] -= dt * Math.max(0.05, effectiveDemand);
+
     if (state.spawnTimers[lane.id] <= 0) {
       const last = cars[cars.length - 1];
-      if (!last || last.position > -WORLD_EDGE + 45 + gap) {
+      const minimumEntryGap = 52 / Math.max(0.55, state.environment.modifiers.roadCapacity);
+      if (!last || last.position > -WORLD_EDGE + minimumEntryGap) {
         const car = makeVehicle(state, lane.id, -WORLD_EDGE);
         if (last) car.speed = Math.min(car.speed, last.speed);
         state.vehicles.push(car);
-        state.spawnTimers[lane.id] = (2.7 + random(state) * 1.3) / state.weather.roadCapacity;
+        state.spawnTimers[lane.id] =
+          (2.7 + ((lane.id * 17 + state.nextId * 13) % 14) / 10) /
+          Math.max(0.45, state.environment.modifiers.roadCapacity);
       }
     }
   }
-  state.vehicles = state.vehicles.filter((v) => v.position < WORLD_EDGE);
+
+  state.vehicles = state.vehicles.filter((vehicle) => vehicle.position < WORLD_EDGE);
   state.recentPasses = state.recentPasses.filter((time) => time > state.time - 60);
+
+  const queue = state.vehicles.filter(
+    (vehicle) => vehicle.speed < 2 && vehicle.position <= STOP_POSITION,
+  ).length;
+  state.maxQueue = Math.max(state.maxQueue, queue);
 }
 
 export function getMetrics(state: SimulationState): Metrics {
-  let queue = 0, nsQueue = 0, ewQueue = 0, waiting = 0, unfinishedWait = 0;
-  for (const v of state.vehicles) {
-    if (!v.passed) { unfinishedWait += v.waitTime; waiting++; }
-    if (v.speed < 2 && v.position <= STOP_POSITION) {
+  let queue = 0;
+  let nsQueue = 0;
+  let ewQueue = 0;
+  let waiting = 0;
+  let unfinishedWait = 0;
+  const laneQueues = LANES.map(() => 0);
+
+  for (const vehicle of state.vehicles) {
+    if (!vehicle.passed) {
+      unfinishedWait += vehicle.waitTime;
+      waiting++;
+    }
+    if (vehicle.speed < 2 && vehicle.position <= STOP_POSITION) {
       queue++;
-      if (LANES[v.laneId].axis === "ns") nsQueue++; else ewQueue++;
+      laneQueues[vehicle.laneId]++;
+      if (LANES[vehicle.laneId].axis === "ns") nsQueue++;
+      else ewQueue++;
     }
   }
+
+  const completedResponses = state.responses
+    .filter((response) => response.arrivedAt !== null)
+    .map((response) => (response.arrivedAt ?? 0) - response.requestedAt);
+  const emergencyResponseTime = completedResponses.length
+    ? completedResponses.reduce((sum, value) => sum + value, 0) / completedResponses.length
+    : null;
+
   return {
-    active: state.vehicles.length, queue, nsQueue, ewQueue, passed: state.passed,
+    active: state.vehicles.length,
+    queue,
+    nsQueue,
+    ewQueue,
+    passed: state.passed,
     averageWait: (state.completedWait + unfinishedWait) / Math.max(1, state.passed + waiting),
     throughput: state.recentPasses.length * 60 / Math.max(1, Math.min(60, state.time)),
+    maxQueue: state.maxQueue,
+    totalIdleTime: state.totalIdleTime,
+    weightedIdleTime: state.weightedIdleTime,
+    passengerThroughput: state.passengerThroughput,
+    emergencyResponseTime,
+    pendingResponses: state.responses.filter((response) => response.status !== "complete").length,
+    laneQueues,
+    passedByType: { ...state.passedByType },
   };
 }
 
 export function getSnapshot(state: SimulationState): SimulationSnapshot {
   const duration = phaseDuration(state);
   return {
-    time: state.time, phase: state.lights.phase,
-    nsSignal: signalFor(state, "ns"), ewSignal: signalFor(state, "ew"),
+    time: state.time,
+    phase: state.lights.phase,
+    nsSignal: signalFor(state, "ns"),
+    ewSignal: signalFor(state, "ew"),
     remaining: Math.max(0, duration - state.lights.elapsed),
-    progress: Math.min(1, state.lights.elapsed / duration), metrics: getMetrics(state),
+    progress: Math.min(1, state.lights.elapsed / duration),
+    metrics: getMetrics(state),
+    environment: {
+      ...state.environment,
+      modifiers: { ...state.environment.modifiers },
+      visuals: { ...state.environment.visuals },
+    },
+    incidents: state.incidents.map((incident) => ({ ...incident, directions: [...incident.directions] })),
+    responses: state.responses.map((response) => ({ ...response })),
+    events: state.events.map((event) => ({ ...event })),
+    priorityAxis: state.lights.priorityAxis,
+    priority: state.priority ? { ...state.priority } : null,
+    challenge: state.challenge
+      ? {
+          ...state.challenge,
+          firedEvents: [...state.challenge.firedEvents],
+          result: state.challenge.result
+            ? {
+                ...state.challenge.result,
+                score: { ...state.challenge.result.score },
+                objectives: state.challenge.result.objectives.map((objective) => ({ ...objective })),
+                metrics: {
+                  ...state.challenge.result.metrics,
+                  laneQueues: [...state.challenge.result.metrics.laneQueues],
+                  passedByType: { ...state.challenge.result.metrics.passedByType },
+                },
+              }
+            : null,
+        }
+      : null,
   };
 }
 
 export function vehiclePoint(lane: Lane, position: number): { x: number; y: number } {
-  return { x: Math.cos(lane.angle) * position - Math.sin(lane.angle) * lane.offset, y: Math.sin(lane.angle) * position + Math.cos(lane.angle) * lane.offset };
+  return {
+    x: Math.cos(lane.angle) * position - Math.sin(lane.angle) * lane.offset,
+    y: Math.sin(lane.angle) * position + Math.cos(lane.angle) * lane.offset,
+  };
 }
