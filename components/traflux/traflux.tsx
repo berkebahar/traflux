@@ -32,7 +32,6 @@ export function Traflux() {
     changeVehicleMix,
     setDemandMode,
     setRandomIncidents,
-    setCongestionOverlay,
     changeWeather,
     changeTime,
     triggerEvent,
@@ -41,6 +40,7 @@ export function Traflux() {
     clearIncident,
     startChallenge: startChallengeRun,
     openSandbox: openSandboxRun,
+    resetCamera,
     reset,
   } = useSimulation();
   const [challengeBrowserOpen, setChallengeBrowserOpen] = useState(false);
@@ -94,6 +94,7 @@ export function Traflux() {
         <canvas
           ref={canvasRef}
           className="city-canvas"
+          tabIndex={0}
           role="img"
           aria-label="Live top-down Traflux traffic simulation with vehicles, signals, weather, incidents, and challenge scenarios."
         />
@@ -111,6 +112,11 @@ export function Traflux() {
         <div className="scene-caption"><span className="caption-line" /> ONE INTERSECTION. INFINITE RHYTHMS.</div>
 
         <EventFeed events={snapshot.events} />
+
+        <div className="camera-controls glass">
+          <span>DRAG MAP · SCROLL TO ZOOM · WASD</span>
+          <button onClick={resetCamera}>RECENTER</button>
+        </div>
 
         <div className="playback glass">
           <button className={`play-button ${paused ? "is-paused" : ""}`} onClick={togglePaused} aria-label={paused ? "Resume simulation" : "Pause simulation"}>
