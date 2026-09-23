@@ -49,7 +49,6 @@ export function ControlDock({
   changeVehicleMix,
   setDemandMode,
   setRandomIncidents,
-  setCongestionOverlay: _setCongestionOverlay,
   triggerEvent,
   dispatch,
   requestPriority,
@@ -65,7 +64,6 @@ export function ControlDock({
   changeVehicleMix: (key: keyof Pick<VehicleMix, "heavy" | "motorcycle" | "emergency">, value: number) => void;
   setDemandMode: (mode: SimulationSettings["demandMode"]) => void;
   setRandomIncidents: (value: boolean) => void;
-  setCongestionOverlay: (value: boolean) => void;
   triggerEvent: (kind: ImplementedIncidentKind, direction?: Direction) => void;
   dispatch: (type?: EmergencyType) => void;
   requestPriority: (axis: Axis) => boolean;
