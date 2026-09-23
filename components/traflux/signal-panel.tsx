@@ -14,7 +14,7 @@ function Slider({ id, label, value, min, max, step = 1, display, onChange }: { i
   </div>;
 }
 
-export function SignalPanel({ settings, snapshot, changeSetting }: { settings: SimulationSettings; snapshot: SimulationSnapshot; changeSetting: (key: keyof SimulationSettings, value: number) => void }) {
+export function SignalPanel({ settings, snapshot, changeSetting }: { settings: SimulationSettings; snapshot: SimulationSnapshot; changeSetting: (key: "nsGreen" | "ewGreen" | "demand", value: number) => void }) {
   const clearing = snapshot.phase.endsWith("clear");
   const phaseName = clearing ? "Clearing intersection" : `${snapshot.phase.startsWith("ns") ? "North / South" : "East / West"} ${snapshot.phase.endsWith("amber") ? "amber" : "green"}`;
   return <aside className="signal-panel glass" aria-labelledby="signal-title">
