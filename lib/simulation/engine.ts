@@ -80,7 +80,7 @@ export function createSimulation(settings: Partial<SimulationSettings> = {}): Si
     nextEventId: 1,
     nextIncidentId: 1,
     nextResponseId: 1,
-    nextRandomIncidentAt: 48,
+    nextRandomIncidentAt: 34,
     priority: null,
     challenge: null,
   };
@@ -235,14 +235,29 @@ function updateChallenge(state: SimulationState) {
 
 function maybeTriggerRandomIncident(state: SimulationState) {
   if (!state.settings.randomIncidents || state.mode !== "sandbox" || state.time < state.nextRandomIncidentAt) return;
-  const kinds: ImplementedIncidentKind[] = ["breakdown", "surge", "collision"];
+
+  const blockingIncidentActive = state.incidents.some(
+    (incident) => incident.status === "active" && incident.kind !== "surge",
+  );
+  if (blockingIncidentActive) {
+    state.nextRandomIncidentAt = state.time + 10;
+    return;
+  }
+
   const directions: Direction[] = ["north", "south", "east", "west"];
-  const kind = kinds[state.incidentSeed % kinds.length];
+  const roll = state.incidentSeed % 100;
+  const kind: ImplementedIncidentKind = roll < 48 ? "surge" : roll < 82 ? "breakdown" : "collision";
   const direction = directions[(state.incidentSeed >>> 3) % directions.length];
   const incident = triggerIncident(state, kind, direction);
-  if (kind === "collision") dispatchEmergency(state, "ambulance", incident.id, direction);
+
+  if (kind === "collision") {
+    dispatchEmergency(state, "ambulance", incident.id, direction);
+  } else if (kind === "breakdown" && (state.incidentSeed >>> 6) % 4 === 0) {
+    dispatchEmergency(state, "police", incident.id, direction);
+  }
+
   state.incidentSeed = (Math.imul(1664525, state.incidentSeed) + 1013904223) >>> 0;
-  state.nextRandomIncidentAt = state.time + 55 + (state.incidentSeed % 45);
+  state.nextRandomIncidentAt = state.time + 38 + (state.incidentSeed % 48);
 }
 
 /** Mutates only the supplied state. Call with FIXED_STEP for reproducible runs. */
