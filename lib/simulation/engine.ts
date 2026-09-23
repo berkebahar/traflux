@@ -247,6 +247,7 @@ function maybeTriggerRandomIncident(state: SimulationState) {
 
 /** Mutates only the supplied state. Call with FIXED_STEP for reproducible runs. */
 export function stepSimulation(state: SimulationState, dt: number = FIXED_STEP): void {
+  if (state.challenge?.status === "finished") return;
   state.time += dt;
   stepEnvironment(state.environment, dt);
   updateIncidents(state, dt);
